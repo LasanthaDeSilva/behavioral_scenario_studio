@@ -70,12 +70,12 @@ from google.genai import types
 # ============================================================
 
 APP_TITLE = "Outreach Intelligence Lab"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 
-# Change ONLY these if your Google account uses different IDs.
-MODEL_FLASH = "gemini-3.6-flash"
-MODEL_PRO = "gemini-3.1-pro"
-MODEL_LITE = "gemini-3.5-flash-lite"
+# Updated to real, currently existing Gemini endpoints
+MODEL_FLASH = "gemini-2.0-flash"
+MODEL_PRO = "gemini-1.5-pro"
+MODEL_LITE = "gemini-1.5-flash-8b"
 
 DEFAULT_MODEL = MODEL_FLASH
 
@@ -394,26 +394,27 @@ st.markdown(PREMIUM_CSS, unsafe_allow_html=True)
 
 
 # ============================================================
-# 4. DATABASE
+# 4. DATABASE (Cached to prevent Streamlit threading locks)
 # ============================================================
 
 Base = declarative_base()
 
-engine_kwargs = {}
+@st.cache_resource
+def get_db_engine():
+    engine_kwargs = {}
+    if DATABASE_URL.startswith("sqlite"):
+        engine_kwargs["connect_args"] = {"check_same_thread": False}
+    
+    eng = create_engine(DATABASE_URL, **engine_kwargs)
+    Base.metadata.create_all(eng)
+    return eng
 
-if DATABASE_URL.startswith("sqlite"):
-    engine_kwargs["connect_args"] = {"check_same_thread": False}
+@st.cache_resource
+def get_session_factory(_engine):
+    return sessionmaker(bind=_engine, autoflush=False, autocommit=False)
 
-engine = create_engine(
-    DATABASE_URL,
-    **engine_kwargs
-)
-
-SessionLocal = sessionmaker(
-    bind=engine,
-    autoflush=False,
-    autocommit=False
-)
+engine = get_db_engine()
+SessionLocal = get_session_factory(engine)
 
 
 class Event(Base):
@@ -522,9 +523,6 @@ class Survey(Base):
         "Interaction",
         back_populates="surveys"
     )
-
-
-Base.metadata.create_all(engine)
 
 
 def db_session():
@@ -703,6 +701,16 @@ def run_gemini(
 
     if not text:
         raise RuntimeError("Gemini returned an empty response.")
+
+    # Strip markdown block formatting if the model leaked it despite the JSON flag
+    text = text.strip()
+    if text.startswith("```json"):
+        text = text[7:]
+    elif text.startswith("```"):
+        text = text[3:]
+    if text.endswith("```"):
+        text = text[:-3]
+    text = text.strip()
 
     return schema.model_validate_json(text)
 
@@ -1416,9 +1424,9 @@ with st.sidebar:
     st.markdown("---")
 
     model_options = {
-        "Gemini 3.6 Flash": MODEL_FLASH,
-        "Gemini 3.1 Pro": MODEL_PRO,
-        "Gemini 3.5 Flash-Lite": MODEL_LITE,
+        "Gemini 2.0 Flash": MODEL_FLASH,
+        "Gemini 1.5 Pro": MODEL_PRO,
+        "Gemini 1.5 Flash-8B": MODEL_LITE,
     }
 
     selected_model_label = st.selectbox(
@@ -1795,7 +1803,7 @@ elif page == "Live Copilot":
     else:
 
         event_map = {
-            f"{e.name}": e
+            f"{e.name} ({e.date.strftime('%Y-%m-%d %H:%M')})": e
             for e in events
         }
 
@@ -2284,7 +2292,7 @@ elif page == "Impact Observatory":
     else:
 
         event_map = {
-            e.name: e
+            f"{e.name} ({e.date.strftime('%Y-%m-%d %H:%M')})": e
             for e in events
         }
 
@@ -2616,7 +2624,7 @@ elif page == "Counterfactual Lab":
     else:
 
         event_map = {
-            e.name: e
+            f"{e.name} ({e.date.strftime('%Y-%m-%d %H:%M')})": e
             for e in events
         }
 
@@ -2978,7 +2986,7 @@ with st.expander(
     else:
 
         event_map = {
-            e.name: e
+            f"{e.name} ({e.date.strftime('%Y-%m-%d %H:%M')})": e
             for e in events
         }
 
@@ -3012,7 +3020,7 @@ with st.expander(
         else:
 
             interaction_map = {
-                i.participant_code: i
+                f"{i.participant_code} ({i.started_at.strftime('%H:%M:%S')})": i
                 for i in interactions
             }
 
