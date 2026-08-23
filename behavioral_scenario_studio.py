@@ -271,13 +271,11 @@ with st.sidebar:
         primary_model = "gemini-3.6-flash"
         backup_model = "gemini-3.5-flash-lite"
 
+    # Fetch key directly from Secrets without showing any text box to users
     api_key = st.secrets.get("GEMINI_API_KEY", "")
     if not api_key:
-        api_key = st.text_input("Enter Gemini API Key:", type="password")
-
-if not api_key:
-    st.warning("Please enter your Gemini API Key in the sidebar or configure your secrets to begin.")
-    st.stop()
+        st.error("Application configuration error: API Key missing from Secrets.")
+        st.stop()
 
 client = genai.Client(api_key=api_key)
 
