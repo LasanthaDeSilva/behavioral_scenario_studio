@@ -3,7 +3,8 @@ import uuid
 import json
 import math
 from datetime import datetime, timezone
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Dict, Any
+from contextlib import contextmanager
 
 import pandas as pd
 import streamlit as st
@@ -17,7 +18,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
 )
-from sqlalchemy.orm import declarative_base, relationship, sessionmaker
+from sqlalchemy.orm import declarative_base, relationship, sessionmaker, Session
 
 from pydantic import BaseModel, Field
 
@@ -317,22 +318,6 @@ button[data-testid="baseButton-primary"]:hover {
     margin-top: 5px;
 }
 
-/* Progress */
-
-.progress-background {
-    background: #242428;
-    border-radius: 99px;
-    height: 7px;
-    width: 100%;
-    overflow: hidden;
-}
-
-.progress-fill {
-    background: var(--accent);
-    height: 100%;
-    border-radius: 99px;
-}
-
 /* Evidence */
 
 .evidence {
@@ -383,34 +368,6 @@ button[data-testid="baseButton-primary"]:hover {
     color: var(--positive);
     border: 1px solid rgba(91,214,138,0.25);
     background: rgba(91,214,138,0.08);
-}
-
-.status-warning {
-    color: var(--warning);
-    border: 1px solid rgba(231,184,91,0.25);
-    background: rgba(231,184,91,0.08);
-}
-
-.status-negative {
-    color: var(--negative);
-    border: 1px solid rgba(224,107,107,0.25);
-    background: rgba(224,107,107,0.08);
-}
-
-/* Alerts */
-
-div[data-testid="stAlert"] {
-    background: var(--surface-2) !important;
-    border: 1px solid var(--border) !important;
-    border-radius: 10px !important;
-}
-
-/* Tables */
-
-div[data-testid="stDataFrame"] {
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    overflow: hidden;
 }
 
 /* Hide Streamlit branding */
@@ -626,29 +583,24 @@ Base.metadata.create_all(bind=engine)
 
 
 # ============================================================
-# DATABASE HELPER
+# DATABASE CONTEXT MANAGER
 # ============================================================
 
+@contextmanager
 def get_db():
     db = SessionLocal()
-
     try:
         yield db
-
     finally:
         db.close()
 
 
-db = next(get_db())
-
-
 # ============================================================
-# GEMINI CLIENT
+# GEMINI CLIENT & PARSER
 # ============================================================
 
 @st.cache_resource
 def get_ai_client():
-
     api_key = (
         st.secrets.get("GEMINI_API_KEY", None)
         if hasattr(st, "secrets")
@@ -662,10 +614,7 @@ def get_ai_client():
         return None
 
     try:
-        return genai.Client(
-            api_key=api_key
-        )
-
+        return genai.Client(api_key=api_key)
     except Exception:
         return None
 
@@ -673,12 +622,27 @@ def get_ai_client():
 ai_client = get_ai_client()
 
 
+def parse_pydantic_response(response: Any, model_class: Any) -> Any:
+    if hasattr(response, "parsed") and response.parsed:
+        return response.parsed
+
+    text = response.text.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+
+    return model_class.model_validate_json(text)
+
+
 # ============================================================
 # PYDANTIC AI SCHEMAS
 # ============================================================
 
 class OutreachRecommendation(BaseModel):
-
     recommended_action: str = Field(
         description=(
             "The most appropriate immediate outreach action. "
@@ -687,16 +651,10 @@ class OutreachRecommendation(BaseModel):
     )
 
     rationale: str = Field(
-        description=(
-            "Evidence-grounded explanation for the recommendation."
-        )
+        description="Evidence-grounded explanation for the recommendation."
     )
 
-    confidence: Literal[
-        "Low",
-        "Moderate",
-        "High",
-    ]
+    confidence: Literal["Low", "Moderate", "High"]
 
     evidence: List[str] = Field(
         description=(
@@ -707,8 +665,7 @@ class OutreachRecommendation(BaseModel):
 
     alternative_explanation: str = Field(
         description=(
-            "A plausible alternative interpretation that prevents "
-            "overconfidence."
+            "A plausible alternative interpretation that prevents overconfidence."
         )
     )
 
@@ -721,20 +678,12 @@ class OutreachRecommendation(BaseModel):
 
 
 class QualitativeTheme(BaseModel):
-
     theme: str
-
     evidence: List[str]
-
-    confidence: Literal[
-        "Low",
-        "Moderate",
-        "High",
-    ]
+    confidence: Literal["Low", "Moderate", "High"]
 
 
 class ImpactInterpretation(BaseModel):
-
     summary: str = Field(
         description="Concise interpretation of the measured engagement impact."
     )
@@ -750,13 +699,13 @@ class ImpactInterpretation(BaseModel):
     plausible_mechanisms: List[str] = Field(
         min_length=2,
         max_length=4,
-        description="Plausible mechanisms that could explain the observed pattern."
+        description="Plausible mechanisms that could explain the observed pattern.",
     )
 
     limitations: List[str] = Field(
         min_length=2,
         max_length=5,
-        description="Important limitations and alternative explanations."
+        description="Important limitations and alternative explanations.",
     )
 
     next_measurement: str = Field(
@@ -769,58 +718,29 @@ class ImpactInterpretation(BaseModel):
 # ============================================================
 
 SYSTEM_INSTRUCTION = """
-You are the interpretation layer of the Ninolades Outreach Intelligence
-platform.
-
+You are the interpretation layer of the Ninolades Outreach Intelligence platform.
 Your role is to help science communicators improve real-world outreach.
 
 CORE PRINCIPLES:
-
-1. Treat all participant characteristics as hypothetical or uncertain
-   unless directly stated by the participant.
-
-2. Never diagnose autism, ADHD, anxiety, personality disorders, or any
-   other medical, psychiatric, neurological, or clinical condition.
-
+1. Treat all participant characteristics as hypothetical or uncertain unless directly stated by the participant.
+2. Never diagnose autism, ADHD, anxiety, personality disorders, or any other medical, psychiatric, neurological, or clinical condition.
 3. Never claim to know a participant's internal mental state from behavior.
-
 4. Distinguish clearly between:
    - DIRECT: participant explicitly stated something.
    - OBSERVED: facilitator directly observed something.
    - INFERRED: reasonable interpretation of observations.
    - HYPOTHESIS: speculative explanation.
-
 5. Participant-stated preferences take priority over inferred preferences.
-
-6. Do not pathologize silence, eye contact, movement, facial expression,
-   social behavior, or communication style.
-
-7. No intervention is often the correct intervention when engagement
-   appears healthy.
-
+6. Do not pathologize silence, eye contact, movement, facial expression, social behavior, or communication style.
+7. No intervention is often the correct intervention when engagement appears healthy.
 8. Prefer minimally disruptive, reversible outreach actions.
-
 9. Do not manipulate participants.
-
-10. Recommendations should optimize:
-    - comprehension
-    - curiosity
-    - autonomy
-    - comfort
-    - meaningful engagement
-    - scientific understanding
-
+10. Recommendations should optimize comprehension, curiosity, autonomy, comfort, meaningful engagement, and scientific understanding.
 11. Always acknowledge uncertainty.
-
 12. Do not treat model-generated probabilities as empirical probabilities.
-
 13. Do not infer stable personality traits from a small number of behaviors.
-
-14. Focus on the interaction and the outreach environment rather than
-    labeling the person.
-
+14. Focus on the interaction and the outreach environment rather than labeling the person.
 15. If evidence is insufficient, explicitly say so.
-
 16. Never fabricate evidence.
 """
 
@@ -831,10 +751,9 @@ CORE PRINCIPLES:
 
 def get_adaptation(
     context_data: dict,
-    client,
+    client: Any,
     model_name: str,
 ) -> OutreachRecommendation:
-
     prompt = f"""
 You are assisting a science outreach facilitator in real time.
 
@@ -851,16 +770,10 @@ RECENT OBSERVATIONS:
 {json.dumps(context_data.get("observations", []), indent=2)}
 
 TASK:
-
 Recommend the most appropriate next outreach action.
-
 Prioritize direct evidence and participant autonomy.
-
 Do not diagnose or infer hidden psychological traits.
-
-If the participant appears adequately engaged, "No intervention" may be
-the best recommendation.
-
+If the participant appears adequately engaged, "No intervention" may be the best recommendation.
 Provide one concrete next action and explain why.
 """
 
@@ -874,12 +787,7 @@ Provide one concrete next action and explain why.
         ),
     )
 
-    if hasattr(response, "parsed") and response.parsed:
-        return response.parsed
-
-    return OutreachRecommendation.model_validate_json(
-        response.text
-    )
+    return parse_pydantic_response(response, OutreachRecommendation)
 
 
 # ============================================================
@@ -888,19 +796,15 @@ Provide one concrete next action and explain why.
 
 def extract_theme(
     memory_text: str,
-    client,
+    client: Any,
     model_name: str,
 ) -> QualitativeTheme:
-
     prompt = f"""
 Analyze this participant's response:
-
 "{memory_text}"
 
 Identify the primary memory or engagement theme.
-
 Do not infer personality, diagnosis, intelligence, or hidden psychology.
-
 Only describe what the response itself supports.
 """
 
@@ -914,12 +818,7 @@ Only describe what the response itself supports.
         ),
     )
 
-    if hasattr(response, "parsed") and response.parsed:
-        return response.parsed
-
-    return QualitativeTheme.model_validate_json(
-        response.text
-    )
+    return parse_pydantic_response(response, QualitativeTheme)
 
 
 # ============================================================
@@ -928,21 +827,17 @@ Only describe what the response itself supports.
 
 def interpret_impact(
     metrics: dict,
-    client,
+    client: Any,
     model_name: str,
 ) -> ImpactInterpretation:
-
     prompt = f"""
 Interpret the following deterministic outreach measurements.
 
 MEASUREMENTS:
-
 {json.dumps(metrics, indent=2)}
 
 Explain the pattern conservatively.
-
 Do not claim causality.
-
 Do not treat aggregate measurements as psychological diagnoses.
 
 Distinguish:
@@ -963,162 +858,96 @@ Identify the strongest useful signal and the most useful next measurement.
         ),
     )
 
-    if hasattr(response, "parsed") and response.parsed:
-        return response.parsed
-
-    return ImpactInterpretation.model_validate_json(
-        response.text
-    )
+    return parse_pydantic_response(response, ImpactInterpretation)
 
 
 # ============================================================
 # EVENT ANALYTICS
 # ============================================================
 
-def calculate_impact_fingerprint(
-    db,
-    event_id: str,
-):
-
-    query = (
-        db.query(Survey)
-        .join(Interaction)
-        .filter(Interaction.event_id == event_id)
-    )
-
-    df = pd.read_sql(
-        query.statement,
-        db.bind,
-    )
+def calculate_impact_fingerprint(event_id: str) -> Optional[Dict[str, Any]]:
+    with engine.connect() as conn:
+        with get_db() as db:
+            query = (
+                db.query(Survey)
+                .join(Interaction)
+                .filter(Interaction.event_id == event_id)
+            )
+            df = pd.read_sql(query.statement, con=conn)
 
     if df.empty:
         return None
 
-    participant_count = (
-        df["interaction_id"]
-        .nunique()
-    )
+    participant_count = df["interaction_id"].nunique()
 
-    baseline = df[
-        df["timing"] == "BASELINE"
-    ]
+    baseline = df[df["timing"] == "BASELINE"]
+    immediate = df[df["timing"] == "IMMEDIATE"]
+    delayed = df[df["timing"].isin(["DELAYED_24H", "DELAYED_7D"])]
 
-    immediate = df[
-        df["timing"] == "IMMEDIATE"
-    ]
+    def safe_mean(series: pd.Series) -> Optional[float]:
+        clean = series.dropna()
+        if clean.empty:
+            return None
+        val = clean.mean()
+        return float(val) if pd.notna(val) else None
 
-    delayed = df[
-        df["timing"].isin(
-            [
-                "DELAYED_24H",
-                "DELAYED_7D",
-            ]
-        )
-    ]
-
-    baseline_curiosity = (
-        baseline["curiosity_score"].mean()
-        if not baseline.empty
-        else None
-    )
-
-    post_curiosity = (
-        immediate["curiosity_score"].mean()
-        if not immediate.empty
-        else None
-    )
-
-    baseline_knowledge = (
-        baseline["knowledge_score"].mean()
-        if not baseline.empty
-        else None
-    )
-
-    post_knowledge = (
-        immediate["knowledge_score"].mean()
-        if not immediate.empty
-        else None
-    )
+    baseline_curiosity = safe_mean(baseline["curiosity_score"])
+    post_curiosity = safe_mean(immediate["curiosity_score"])
+    baseline_knowledge = safe_mean(baseline["knowledge_score"])
+    post_knowledge = safe_mean(immediate["knowledge_score"])
 
     curiosity_change = (
         post_curiosity - baseline_curiosity
-        if baseline_curiosity is not None
-        and post_curiosity is not None
+        if baseline_curiosity is not None and post_curiosity is not None
         else None
     )
 
     knowledge_change = (
         post_knowledge - baseline_knowledge
-        if baseline_knowledge is not None
-        and post_knowledge is not None
+        if baseline_knowledge is not None and post_knowledge is not None
         else None
     )
 
     follow_through_rate = None
-
-    if (
-        not delayed.empty
-        and "follow_through" in delayed.columns
-    ):
-
-        valid_follow = delayed[
-            delayed["follow_through"].isin(
-                ["Yes", "No"]
-            )
-        ]
-
+    if not delayed.empty and "follow_through" in delayed.columns:
+        valid_follow = delayed[delayed["follow_through"].isin(["Yes", "No"])]
         if not valid_follow.empty:
-
-            follow_through_rate = (
-                (
-                    valid_follow[
-                        "follow_through"
-                    ] == "Yes"
-                ).mean()
-                * 100
+            follow_through_rate = float(
+                (valid_follow["follow_through"] == "Yes").mean() * 100
             )
 
     return {
-        "total_participants": int(
-            participant_count
-        ),
-
+        "total_participants": int(participant_count),
         "baseline_curiosity": (
             round(baseline_curiosity, 2)
             if baseline_curiosity is not None
             else None
         ),
-
         "post_curiosity": (
             round(post_curiosity, 2)
             if post_curiosity is not None
             else None
         ),
-
         "curiosity_change": (
             round(curiosity_change, 2)
             if curiosity_change is not None
             else None
         ),
-
         "baseline_knowledge": (
             round(baseline_knowledge, 2)
             if baseline_knowledge is not None
             else None
         ),
-
         "post_knowledge": (
             round(post_knowledge, 2)
             if post_knowledge is not None
             else None
         ),
-
         "knowledge_change": (
             round(knowledge_change, 2)
             if knowledge_change is not None
             else None
         ),
-
         "follow_through_rate": (
             round(follow_through_rate, 2)
             if follow_through_rate is not None
@@ -1138,7 +967,6 @@ SESSION_DEFAULTS = {
 }
 
 for key, value in SESSION_DEFAULTS.items():
-
     if key not in st.session_state:
         st.session_state[key] = value
 
@@ -1149,23 +977,10 @@ for key, value in SESSION_DEFAULTS.items():
 
 st.markdown(
     """
-    <div style="
-        margin-bottom: 34px;
-    ">
-        <div class="eyebrow">
-            Ninolades Intelligence
-        </div>
-
-        <h1>
-            Outreach Intelligence
-        </h1>
-
-        <p style="
-            font-size: 1.05rem;
-            max-width: 760px;
-            line-height: 1.6;
-            color: #a1a1aa;
-        ">
+    <div style="margin-bottom: 34px;">
+        <div class="eyebrow">Ninolades Intelligence</div>
+        <h1>Outreach Intelligence</h1>
+        <p style="font-size: 1.05rem; max-width: 760px; line-height: 1.6; color: #a1a1aa;">
             A real-time system for designing, adapting, and measuring
             meaningful science engagement.
         </p>
@@ -1180,29 +995,16 @@ st.markdown(
 # ============================================================
 
 with st.sidebar:
-
     st.markdown(
         """
-        <div style="
-            font-size: 1.1rem;
-            font-weight: 500;
-            color: #f5f5f7;
-            margin-bottom: 24px;
-        ">
+        <div style="font-size: 1.1rem; font-weight: 500; color: #f5f5f7; margin-bottom: 24px;">
             Outreach Intelligence
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    st.markdown(
-        """
-        <div class="eyebrow">
-            AI Engine
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    st.markdown("<div class='eyebrow'>AI Engine</div>", unsafe_allow_html=True)
 
     model_choice = st.selectbox(
         "Reasoning engine",
@@ -1210,15 +1012,8 @@ with st.sidebar:
         index=0,
     )
 
-    selected_model = MODEL_OPTIONS[
-        model_choice
-    ]["id"]
-
-    st.caption(
-        MODEL_OPTIONS[
-            model_choice
-        ]["description"]
-    )
+    selected_model = MODEL_OPTIONS[model_choice]["id"]
+    st.caption(MODEL_OPTIONS[model_choice]["description"])
 
     st.markdown("---")
 
@@ -1233,7 +1028,6 @@ with st.sidebar:
     )
 
     st.markdown("---")
-
     st.caption(
         "AI-generated interpretations are hypotheses, "
         "not measurements of internal psychological states."
@@ -1245,32 +1039,20 @@ with st.sidebar:
 # ============================================================
 
 if page == "Event Builder":
-
     st.markdown(
-        """
-        <div class="section-title">
-            Event Builder
-        </div>
-        """,
+        "<div class='section-title'>Event Builder</div>",
         unsafe_allow_html=True,
     )
-
     st.markdown(
-        """
-        <p class="muted">
-            Define the outreach environment before participants arrive.
-        </p>
-        """,
+        "<p class='muted'>Define the outreach environment before participants arrive.</p>",
         unsafe_allow_html=True,
     )
 
     with st.form("event_builder"):
-
         name = st.text_input(
             "Event name",
             placeholder="e.g. Saturn Under the Southern Sky",
         )
-
         objective = st.selectbox(
             "Primary objective",
             [
@@ -1281,7 +1063,6 @@ if page == "Event Builder":
                 "Scientific participation",
             ],
         )
-
         acoustic = st.selectbox(
             "Acoustic setting",
             [
@@ -1292,15 +1073,10 @@ if page == "Event Builder":
                 "Variable / experimental",
             ],
         )
-
         environment = st.text_input(
             "Environment",
-            placeholder=(
-                "e.g. Dark-sky lawn, telescope station, "
-                "moderate crowd"
-            ),
+            placeholder="e.g. Dark-sky lawn, telescope station, moderate crowd",
         )
-
         audience = st.selectbox(
             "Audience",
             [
@@ -1312,13 +1088,9 @@ if page == "Event Builder":
                 "Mixed audience",
             ],
         )
-
         description = st.text_area(
             "Event description",
-            placeholder=(
-                "Describe the experience, scientific content, "
-                "setting, and intended engagement."
-            ),
+            placeholder="Describe the experience, scientific content, setting, and intended engagement.",
         )
 
         submitted = st.form_submit_button(
@@ -1328,113 +1100,68 @@ if page == "Event Builder":
         )
 
         if submitted:
-
             if not name.strip():
-
-                st.error(
-                    "An event name is required."
-                )
-
+                st.error("An event name is required.")
             else:
-
-                event = Event(
-                    name=name.strip(),
-                    primary_objective=objective,
-                    acoustic_setting=acoustic,
-                    environment=environment,
-                    audience=audience,
-                    description=description,
-                )
-
-                db.add(event)
-                db.commit()
-
-                st.success(
-                    "Event created successfully."
-                )
+                with get_db() as db:
+                    event = Event(
+                        name=name.strip(),
+                        primary_objective=objective,
+                        acoustic_setting=acoustic,
+                        environment=environment,
+                        audience=audience,
+                        description=description,
+                    )
+                    db.add(event)
+                    db.commit()
+                st.success("Event created successfully.")
 
     st.markdown(
         "<div class='section-title'>Existing Events</div>",
         unsafe_allow_html=True,
     )
 
-    events = (
-        db.query(Event)
-        .order_by(Event.date.desc())
-        .all()
-    )
-
-    if not events:
-
-        st.info(
-            "No events have been created yet."
-        )
-
-    else:
-
+    with get_db() as db:
+        events = db.query(Event).order_by(Event.date.desc()).all()
+        events_data = []
         for event in events:
-
             interactions_count = (
                 db.query(Interaction)
-                .filter(
-                    Interaction.event_id
-                    == event.id
-                )
+                .filter(Interaction.event_id == event.id)
                 .count()
             )
+            events_data.append({
+                "name": event.name,
+                "description": event.description,
+                "objective": event.primary_objective,
+                "audience": event.audience,
+                "count": interactions_count,
+            })
 
+    if not events_data:
+        st.info("No events have been created yet.")
+    else:
+        for ev in events_data:
             st.markdown(
                 f"""
                 <div class="premium-card">
-
-                    <div class="eyebrow">
-                        Outreach Event
+                    <div class="eyebrow">Outreach Event</div>
+                    <h3>{ev['name']}</h3>
+                    <p>{ev['description'] or "No description provided."}</p>
+                    <div style="display:grid; grid-template-columns: repeat(3,1fr); gap:12px;">
+                        <div class="metric-card">
+                            <div class="metric-label">Objective</div>
+                            <div style="color:#f5f5f7;">{ev['objective']}</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-label">Audience</div>
+                            <div style="color:#f5f5f7;">{ev['audience']}</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-label">Interactions</div>
+                            <div class="metric-value">{ev['count']}</div>
+                        </div>
                     </div>
-
-                    <h3>
-                        {event.name}
-                    </h3>
-
-                    <p>
-                        {event.description or "No description provided."}
-                    </p>
-
-                    <div style="
-                        display:grid;
-                        grid-template-columns:
-                        repeat(3,1fr);
-                        gap:12px;
-                    ">
-
-                        <div class="metric-card">
-                            <div class="metric-label">
-                                Objective
-                            </div>
-                            <div style="color:#f5f5f7;">
-                                {event.primary_objective}
-                            </div>
-                        </div>
-
-                        <div class="metric-card">
-                            <div class="metric-label">
-                                Audience
-                            </div>
-                            <div style="color:#f5f5f7;">
-                                {event.audience}
-                            </div>
-                        </div>
-
-                        <div class="metric-card">
-                            <div class="metric-label">
-                                Interactions
-                            </div>
-                            <div class="metric-value">
-                                {interactions_count}
-                            </div>
-                        </div>
-
-                    </div>
-
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -1446,128 +1173,61 @@ if page == "Event Builder":
 # ============================================================
 
 elif page == "Live Copilot":
-
+    st.markdown(
+        "<div class='section-title'>Live Outreach Copilot</div>",
+        unsafe_allow_html=True,
+    )
     st.markdown(
         """
-        <div class="section-title">
-            Live Outreach Copilot
-        </div>
-
         <p class="muted">
             Record what is actually happening. The AI recommends
-            minimally disruptive next steps without treating
-            observations as diagnoses.
+            minimally disruptive next steps without treating observations as diagnoses.
         </p>
         """,
         unsafe_allow_html=True,
     )
 
-    events = (
-        db.query(Event)
-        .order_by(Event.date.desc())
-        .all()
-    )
+    with get_db() as db:
+        events = db.query(Event).order_by(Event.date.desc()).all()
+        event_dict = {e.name: {"id": e.id, "objective": e.primary_objective} for e in events}
 
-    if not events:
-
-        st.info(
-            "Create an event before starting live outreach."
-        )
+    if not event_dict:
+        st.info("Create an event before starting live outreach.")
         st.stop()
 
-    event_dict = {
-        e.name: e
-        for e in events
-    }
+    selected_event_name = st.selectbox("Active event", list(event_dict.keys()))
+    event_info = event_dict[selected_event_name]
 
-    selected_event_name = st.selectbox(
-        "Active event",
-        list(event_dict.keys()),
-    )
+    current_id = st.session_state.current_interaction
 
-    event_record = event_dict[
-        selected_event_name
-    ]
+    with get_db() as db:
+        interaction_obj = None
+        if current_id:
+            interaction_obj = db.query(Interaction).filter(Interaction.id == current_id).first()
 
-    if (
-        st.session_state.current_interaction
-        is None
-    ):
-
-        interaction = Interaction(
-            event_id=event_record.id
-        )
-
-        db.add(interaction)
-        db.commit()
-
-        st.session_state.current_interaction = (
-            interaction.id
-        )
-
-    current_id = (
-        st.session_state.current_interaction
-    )
-
-    interaction = (
-        db.query(Interaction)
-        .filter(
-            Interaction.id == current_id
-        )
-        .first()
-    )
-
-    if (
-        interaction is None
-        or interaction.event_id != event_record.id
-    ):
-
-        interaction = Interaction(
-            event_id=event_record.id
-        )
-
-        db.add(interaction)
-        db.commit()
-
-        st.session_state.current_interaction = (
-            interaction.id
-        )
-
-        current_id = interaction.id
+        if interaction_obj is None or interaction_obj.event_id != event_info["id"]:
+            new_interaction = Interaction(event_id=event_info["id"])
+            db.add(new_interaction)
+            db.commit()
+            st.session_state.current_interaction = new_interaction.id
+            current_id = new_interaction.id
+            interaction_phase = new_interaction.phase
+            stated_pref = new_interaction.stated_preference
+        else:
+            interaction_phase = interaction_obj.phase
+            stated_pref = interaction_obj.stated_preference
 
     st.markdown(
         f"""
         <div class="premium-card">
-
-            <div class="eyebrow">
-                Active Interaction
-            </div>
-
-            <div style="
-                display:flex;
-                justify-content:space-between;
-                align-items:center;
-            ">
-
+            <div class="eyebrow">Active Interaction</div>
+            <div style="display:flex; justify-content:space-between; align-items:center;">
                 <div>
-                    <div style="
-                        color:#f5f5f7;
-                        font-size:1.1rem;
-                    ">
-                        Participant session
-                    </div>
-
-                    <div class="muted">
-                        Session {current_id[:8]}
-                    </div>
+                    <div style="color:#f5f5f7; font-size:1.1rem;">Participant session</div>
+                    <div class="muted">Session {current_id[:8]}</div>
                 </div>
-
-                <div class="status status-positive">
-                    Active
-                </div>
-
+                <div class="status status-positive">Active</div>
             </div>
-
         </div>
         """,
         unsafe_allow_html=True,
@@ -1575,143 +1235,59 @@ elif page == "Live Copilot":
 
     preference = st.text_input(
         "Participant-stated preference",
-        placeholder=(
-            "Optional. Record only what the participant "
-            "actually tells you."
-        ),
+        value=stated_pref or "",
+        placeholder="Optional. Record only what the participant actually tells you.",
     )
 
-    if preference.strip():
-
-        interaction.stated_preference = (
-            preference.strip()
-        )
-
-        db.commit()
+    if preference.strip() and preference.strip() != stated_pref:
+        with get_db() as db:
+            interaction = db.query(Interaction).filter(Interaction.id == current_id).first()
+            if interaction:
+                interaction.stated_preference = preference.strip()
+                db.commit()
 
     st.markdown(
         "<div class='section-title'>Rapid Evidence Logging</div>",
         unsafe_allow_html=True,
     )
 
-    st.caption(
-        "These controls record observations. They do not claim to "
-        "explain why the participant behaved that way."
-    )
+    def log_obs(category: str, detail: str, level: str = "OBSERVED"):
+        with get_db() as db:
+            obs = Observation(
+                interaction_id=current_id,
+                category=category,
+                detail=detail,
+                evidence_level=level,
+            )
+            db.add(obs)
+            db.commit()
+        st.toast("Observation recorded.")
 
     c1, c2, c3 = st.columns(3)
 
-    def log_obs(
-        category,
-        detail,
-        level="OBSERVED",
-    ):
-
-        obs = Observation(
-            interaction_id=current_id,
-            category=category,
-            detail=detail,
-            evidence_level=level,
-        )
-
-        db.add(obs)
-        db.commit()
-
-        st.toast(
-            "Observation recorded."
-        )
-
     with c1:
-
-        if st.button(
-            "Observing target",
-            use_container_width=True,
-        ):
-            log_obs(
-                "Attention",
-                "Participant is observing the target.",
-            )
-
-        if st.button(
-            "Looking elsewhere",
-            use_container_width=True,
-        ):
-            log_obs(
-                "Attention",
-                "Participant is looking elsewhere.",
-            )
-
-        if st.button(
-            "Asks technical question",
-            use_container_width=True,
-        ):
-            log_obs(
-                "Participation",
-                "Participant asks a technical question.",
-            )
+        if st.button("Observing target", use_container_width=True):
+            log_obs("Attention", "Participant is observing the target.")
+        if st.button("Looking elsewhere", use_container_width=True):
+            log_obs("Attention", "Participant is looking elsewhere.")
+        if st.button("Asks technical question", use_container_width=True):
+            log_obs("Participation", "Participant asks a technical question.")
 
     with c2:
-
-        if st.button(
-            "Listening",
-            use_container_width=True,
-        ):
-            log_obs(
-                "Participation",
-                "Participant appears to be listening.",
-            )
-
-        if st.button(
-            "Requests more information",
-            use_container_width=True,
-        ):
-            log_obs(
-                "Curiosity",
-                "Participant explicitly requests additional information.",
-                "DIRECT",
-            )
-
-        if st.button(
-            "Requests a change",
-            use_container_width=True,
-        ):
-            log_obs(
-                "Preference",
-                "Participant explicitly requests a change.",
-                "DIRECT",
-            )
+        if st.button("Listening", use_container_width=True):
+            log_obs("Participation", "Participant appears to be listening.")
+        if st.button("Requests more information", use_container_width=True):
+            log_obs("Curiosity", "Participant explicitly requests additional information.", "DIRECT")
+        if st.button("Requests a change", use_container_width=True):
+            log_obs("Preference", "Participant explicitly requests a change.", "DIRECT")
 
     with c3:
-
-        if st.button(
-            "Voluntarily leaves",
-            use_container_width=True,
-        ):
-            log_obs(
-                "Exit",
-                "Participant voluntarily leaves the interaction.",
-                "DIRECT",
-            )
-
-        if st.button(
-            "Environmental noise",
-            use_container_width=True,
-        ):
-            log_obs(
-                "Environment",
-                "Environmental noise is present.",
-                "OBSERVED",
-            )
-
-        if st.button(
-            "Long pause",
-            use_container_width=True,
-        ):
-            log_obs(
-                "Timing",
-                "Participant pauses before responding.",
-                "OBSERVED",
-            )
+        if st.button("Voluntarily leaves", use_container_width=True):
+            log_obs("Exit", "Participant voluntarily leaves the interaction.", "DIRECT")
+        if st.button("Environmental noise", use_container_width=True):
+            log_obs("Environment", "Environmental noise is present.", "OBSERVED")
+        if st.button("Long pause", use_container_width=True):
+            log_obs("Timing", "Participant pauses before responding.", "OBSERVED")
 
     st.markdown(
         "<div class='section-title'>Custom Observation</div>",
@@ -1720,105 +1296,61 @@ elif page == "Live Copilot":
 
     custom_category = st.selectbox(
         "Category",
-        [
-            "Attention",
-            "Participation",
-            "Curiosity",
-            "Preference",
-            "Environment",
-            "Timing",
-            "Exit",
-            "Other",
-        ],
+        ["Attention", "Participation", "Curiosity", "Preference", "Environment", "Timing", "Exit", "Other"],
     )
-
     custom_detail = st.text_input(
         "Observation",
-        placeholder=(
-            "Describe only what was actually observed."
-        ),
+        placeholder="Describe only what was actually observed.",
     )
-
     custom_level = st.selectbox(
         "Evidence level",
-        [
-            "DIRECT",
-            "OBSERVED",
-            "INFERRED",
-            "HYPOTHESIS",
-        ],
+        ["DIRECT", "OBSERVED", "INFERRED", "HYPOTHESIS"],
     )
 
-    if st.button(
-        "Record Observation",
-        use_container_width=True,
-    ):
-
+    if st.button("Record Observation", use_container_width=True):
         if custom_detail.strip():
-
-            log_obs(
-                custom_category,
-                custom_detail.strip(),
-                custom_level,
-            )
-
+            log_obs(custom_category, custom_detail.strip(), custom_level)
         else:
-
-            st.warning(
-                "Enter an observation first."
-            )
+            st.warning("Enter an observation first.")
 
     st.markdown(
         "<div class='section-title'>Recent Evidence</div>",
         unsafe_allow_html=True,
     )
 
-    recent_obs = (
-        db.query(Observation)
-        .filter(
-            Observation.interaction_id
-            == current_id
+    with get_db() as db:
+        recent_obs_db = (
+            db.query(Observation)
+            .filter(Observation.interaction_id == current_id)
+            .order_by(Observation.timestamp.desc())
+            .limit(12)
+            .all()
         )
-        .order_by(
-            Observation.timestamp.desc()
-        )
-        .limit(12)
-        .all()
-    )
+        recent_obs = [
+            {
+                "level": o.evidence_level,
+                "category": o.category,
+                "detail": o.detail,
+            }
+            for o in recent_obs_db
+        ]
 
     if not recent_obs:
-
-        st.info(
-            "No observations recorded yet."
-        )
-
+        st.info("No observations recorded yet.")
     else:
-
         for obs in recent_obs:
-
             css_class = (
                 "observed"
-                if obs.evidence_level
-                in ["DIRECT", "OBSERVED"]
+                if obs["level"] in ["DIRECT", "OBSERVED"]
                 else "interpreted"
-                if obs.evidence_level == "INFERRED"
+                if obs["level"] == "INFERRED"
                 else "speculative"
             )
-
             st.markdown(
                 f"""
                 <div class="evidence {css_class}">
-
-                    <div class="evidence-title">
-                        {obs.evidence_level}
-                        ·
-                        {obs.category}
-                    </div>
-
-                    <div class="evidence-body">
-                        {obs.detail}
-                    </div>
-
+                    <div class="evidence-title">{obs['level']} · {obs['category']}</div>
+                    <div class="evidence-body">{obs['detail']}</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -1829,96 +1361,41 @@ elif page == "Live Copilot":
         unsafe_allow_html=True,
     )
 
-    if st.button(
-        "Generate Next Outreach Action",
-        type="primary",
-        use_container_width=True,
-    ):
-
+    if st.button("Generate Next Outreach Action", type="primary", use_container_width=True):
         if ai_client is None:
-
-            st.error(
-                "Gemini is unavailable. "
-                "Add GEMINI_API_KEY to Streamlit secrets "
-                "or the environment."
-            )
-
+            st.error("Gemini is unavailable. Add GEMINI_API_KEY to secrets or environment.")
         else:
-
-            observations = [
-                (
-                    f"[{o.evidence_level}] "
-                    f"{o.category}: "
-                    f"{o.detail}"
-                )
-                for o in recent_obs
-            ]
-
+            obs_strings = [f"[{o['level']}] {o['category']}: {o['detail']}" for o in recent_obs]
             context = {
-                "phase": interaction.phase,
-                "preference": (
-                    interaction.stated_preference
-                    or "Not provided"
-                ),
-                "observations": observations,
-                "objectives": event_record.primary_objective,
+                "phase": interaction_phase,
+                "preference": preference or "Not provided",
+                "observations": obs_strings,
+                "objectives": event_info["objective"],
             }
 
-            with st.spinner(
-                "Analyzing current outreach evidence..."
-            ):
-
+            with st.spinner("Analyzing current outreach evidence..."):
                 try:
-
-                    recommendation = get_adaptation(
-                        context,
-                        ai_client,
-                        selected_model,
-                    )
-
-                    st.session_state[
-                        "last_recommendation"
-                    ] = recommendation.model_dump()
+                    recommendation = get_adaptation(context, ai_client, selected_model)
+                    st.session_state["last_recommendation"] = recommendation.model_dump()
 
                     st.markdown(
                         f"""
                         <div class="premium-card">
-
-                            <div class="eyebrow">
-                                Recommended Action
-                            </div>
-
-                            <h2>
-                                {recommendation.recommended_action}
-                            </h2>
-
-                            <p>
-                                {recommendation.rationale}
-                            </p>
-
-                            <div class="status status-positive">
-                                Confidence:
-                                {recommendation.confidence}
-                            </div>
-
+                            <div class="eyebrow">Recommended Action</div>
+                            <h2>{recommendation.recommended_action}</h2>
+                            <p>{recommendation.rationale}</p>
+                            <div class="status status-positive">Confidence: {recommendation.confidence}</div>
                         </div>
                         """,
                         unsafe_allow_html=True,
                     )
 
-                    st.markdown(
-                        "<div class='section-title'>Evidence Used</div>",
-                        unsafe_allow_html=True,
-                    )
-
-                    for evidence in recommendation.evidence:
-
+                    st.markdown("<div class='section-title'>Evidence Used</div>", unsafe_allow_html=True)
+                    for ev in recommendation.evidence:
                         st.markdown(
                             f"""
                             <div class="evidence observed">
-                                <div class="evidence-body">
-                                    {evidence}
-                                </div>
+                                <div class="evidence-body">{ev}</div>
                             </div>
                             """,
                             unsafe_allow_html=True,
@@ -1927,63 +1404,34 @@ elif page == "Live Copilot":
                     st.markdown(
                         f"""
                         <div class="premium-card">
-
-                            <div class="eyebrow">
-                                Alternative Explanation
-                            </div>
-
-                            <p>
-                                {recommendation.alternative_explanation}
-                            </p>
-
-                            <div class="eyebrow"
-                                 style="margin-top:18px;">
-                                Next Signal To Watch
-                            </div>
-
-                            <p>
-                                {recommendation.next_observation}
-                            </p>
-
+                            <div class="eyebrow">Alternative Explanation</div>
+                            <p>{recommendation.alternative_explanation}</p>
+                            <div class="eyebrow" style="margin-top:18px;">Next Signal To Watch</div>
+                            <p>{recommendation.next_observation}</p>
                         </div>
                         """,
                         unsafe_allow_html=True,
                     )
 
                 except Exception as error:
-
-                    st.error(
-                        "The selected Gemini model could not "
-                        "complete the analysis."
-                    )
-
-                    st.caption(
-                        str(error)
-                    )
+                    st.error("The selected Gemini model could not complete the analysis.")
+                    st.caption(str(error))
 
     st.markdown(
         "<div class='section-title'>Interaction Controls</div>",
         unsafe_allow_html=True,
     )
 
-    if st.button(
-        "End Interaction",
-        use_container_width=True,
-    ):
-
-        interaction.timestamp_end = (
-            datetime.now(timezone.utc)
-        )
-
-        db.commit()
+    if st.button("End Interaction", use_container_width=True):
+        with get_db() as db:
+            interaction = db.query(Interaction).filter(Interaction.id == current_id).first()
+            if interaction:
+                interaction.timestamp_end = datetime.now(timezone.utc)
+                db.commit()
 
         st.session_state.current_interaction = None
         st.session_state.last_recommendation = None
-
-        st.success(
-            "Interaction closed."
-        )
-
+        st.success("Interaction closed.")
         st.rerun()
 
 
@@ -1992,195 +1440,99 @@ elif page == "Live Copilot":
 # ============================================================
 
 elif page == "Impact & Surveys":
-
     st.markdown(
-        """
-        <div class="section-title">
-            Participant Impact
-        </div>
-
-        <p class="muted">
-            Optional participant feedback can complement behavioral
-            observations with direct self-report.
-        </p>
-        """,
+        "<div class='section-title'>Participant Impact</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<p class='muted'>Optional participant feedback can complement behavioral observations with direct self-report.</p>",
         unsafe_allow_html=True,
     )
 
-    interactions = (
-        db.query(Interaction)
-        .order_by(
-            Interaction.timestamp_start.desc()
+    with get_db() as db:
+        interactions = (
+            db.query(Interaction)
+            .order_by(Interaction.timestamp_start.desc())
+            .limit(50)
+            .all()
         )
-        .limit(50)
-        .all()
-    )
+        interaction_labels = {}
+        for i in interactions:
+            event = db.query(Event).filter(Event.id == i.event_id).first()
+            event_name = event.name if event else "Unknown event"
+            interaction_labels[f"{event_name} · {i.id[:8]}"] = i.id
 
-    if not interactions:
-
-        st.info(
-            "No participant interactions have been recorded."
-        )
+    if not interaction_labels:
+        st.info("No participant interactions have been recorded.")
         st.stop()
 
-    interaction_labels = {}
+    selected_label = st.selectbox("Participant interaction", list(interaction_labels.keys()))
+    selected_int_id = interaction_labels[selected_label]
 
-    for i in interactions:
-
-        event = (
-            db.query(Event)
-            .filter(Event.id == i.event_id)
-            .first()
-        )
-
-        event_name = (
-            event.name
-            if event
-            else "Unknown event"
-        )
-
-        interaction_labels[
-            f"{event_name} · {i.id[:8]}"
-        ] = i
-
-    selected_label = st.selectbox(
-        "Participant interaction",
-        list(interaction_labels.keys()),
-    )
-
-    selected_int = interaction_labels[
-        selected_label
-    ]
-
-    tabs = st.tabs(
-        [
-            "Baseline",
-            "Immediate",
-            "Delayed Follow-up",
-        ]
-    )
+    tabs = st.tabs(["Baseline", "Immediate", "Delayed Follow-up"])
 
     with tabs[0]:
-
         with st.form("baseline_form"):
-
-            curiosity = st.slider(
-                "Curiosity before engagement",
-                1,
-                10,
-                5,
-            )
-
-            knowledge = st.slider(
-                "Self-rated knowledge before engagement",
-                0,
-                100,
-                0,
-            )
-
-            submitted = st.form_submit_button(
-                "Save Baseline",
-                use_container_width=True,
-            )
+            curiosity = st.slider("Curiosity before engagement", 1, 10, 5)
+            knowledge = st.slider("Self-rated knowledge before engagement", 0, 100, 0)
+            submitted = st.form_submit_button("Save Baseline", use_container_width=True)
 
             if submitted:
-
-                db.add(
-                    Survey(
-                        interaction_id=selected_int.id,
-                        timing="BASELINE",
-                        curiosity_score=curiosity,
-                        knowledge_score=knowledge,
+                with get_db() as db:
+                    db.add(
+                        Survey(
+                            interaction_id=selected_int_id,
+                            timing="BASELINE",
+                            curiosity_score=curiosity,
+                            knowledge_score=knowledge,
+                        )
                     )
-                )
-
-                db.commit()
-
-                st.success(
-                    "Baseline recorded."
-                )
+                    db.commit()
+                st.success("Baseline recorded.")
 
     with tabs[1]:
-
         with st.form("immediate_form"):
-
-            curiosity_post = st.slider(
-                "Curiosity after engagement",
-                1,
-                10,
-                8,
-            )
-
-            knowledge_post = st.slider(
-                "Self-rated knowledge after engagement",
-                0,
-                100,
-                50,
-            )
-
+            curiosity_post = st.slider("Curiosity after engagement", 1, 10, 8)
+            knowledge_post = st.slider("Self-rated knowledge after engagement", 0, 100, 50)
             memory_text = st.text_area(
                 "What is the one thing you expect to remember?",
-                placeholder=(
-                    "Optional participant response."
-                ),
+                placeholder="Optional participant response.",
             )
-
-            submitted = st.form_submit_button(
-                "Save Immediate Response",
-                use_container_width=True,
-            )
+            submitted = st.form_submit_button("Save Immediate Response", use_container_width=True)
 
             if submitted:
-
-                db.add(
-                    Survey(
-                        interaction_id=selected_int.id,
-                        timing="IMMEDIATE",
-                        curiosity_score=curiosity_post,
-                        knowledge_score=knowledge_post,
-                        memorability_text=memory_text,
+                with get_db() as db:
+                    db.add(
+                        Survey(
+                            interaction_id=selected_int_id,
+                            timing="IMMEDIATE",
+                            curiosity_score=curiosity_post,
+                            knowledge_score=knowledge_post,
+                            memorability_text=memory_text,
+                        )
                     )
-                )
-
-                db.commit()
-
-                st.success(
-                    "Immediate response recorded."
-                )
+                    db.commit()
+                st.success("Immediate response recorded.")
 
     with tabs[2]:
-
         with st.form("delayed_form"):
-
             follow = st.radio(
                 "Did you independently engage with the topic afterward?",
-                [
-                    "Yes",
-                    "No",
-                    "Not sure",
-                ],
+                ["Yes", "No", "Not sure"],
             )
-
-            submitted = st.form_submit_button(
-                "Save Follow-up",
-                use_container_width=True,
-            )
+            submitted = st.form_submit_button("Save Follow-up", use_container_width=True)
 
             if submitted:
-
-                db.add(
-                    Survey(
-                        interaction_id=selected_int.id,
-                        timing="DELAYED_24H",
-                        follow_through=follow,
+                with get_db() as db:
+                    db.add(
+                        Survey(
+                            interaction_id=selected_int_id,
+                            timing="DELAYED_24H",
+                            follow_through=follow,
+                        )
                     )
-                )
-
-                db.commit()
-
-                st.success(
-                    "Follow-up recorded."
-                )
+                    db.commit()
+                st.success("Follow-up recorded.")
 
 
 # ============================================================
@@ -2188,13 +1540,12 @@ elif page == "Impact & Surveys":
 # ============================================================
 
 elif page == "Impact Observatory":
-
+    st.markdown(
+        "<div class='section-title'>Impact Observatory</div>",
+        unsafe_allow_html=True,
+    )
     st.markdown(
         """
-        <div class="section-title">
-            Impact Observatory
-        </div>
-
         <p class="muted">
             Measure what changed after outreach. Deterministic metrics
             are calculated independently from Gemini interpretation.
@@ -2203,46 +1554,22 @@ elif page == "Impact Observatory":
         unsafe_allow_html=True,
     )
 
-    events = (
-        db.query(Event)
-        .order_by(Event.date.desc())
-        .all()
-    )
+    with get_db() as db:
+        events = db.query(Event).order_by(Event.date.desc()).all()
+        event_dict = {e.name: e.id for e in events}
 
-    if not events:
-
-        st.info(
-            "Create an event first."
-        )
+    if not event_dict:
+        st.info("Create an event first.")
         st.stop()
 
-    event_dict = {
-        e.name: e
-        for e in events
-    }
+    event_name = st.selectbox("Event", list(event_dict.keys()))
+    event_id = event_dict[event_name]
 
-    event_name = st.selectbox(
-        "Event",
-        list(event_dict.keys()),
-    )
-
-    event_record = event_dict[
-        event_name
-    ]
-
-    metrics = calculate_impact_fingerprint(
-        db,
-        event_record.id,
-    )
+    metrics = calculate_impact_fingerprint(event_id)
 
     if not metrics:
-
-        st.info(
-            "There is not enough survey data to calculate an impact fingerprint yet."
-        )
-
+        st.info("There is not enough survey data to calculate an impact fingerprint yet.")
     else:
-
         st.markdown(
             "<div class='eyebrow'>Deterministic Measurements</div>",
             unsafe_allow_html=True,
@@ -2253,15 +1580,9 @@ elif page == "Impact Observatory":
         c1.markdown(
             f"""
             <div class="metric-card">
-                <div class="metric-label">
-                    Participants
-                </div>
-                <div class="metric-value">
-                    {metrics["total_participants"]}
-                </div>
-                <div class="metric-detail">
-                    Unique interaction records
-                </div>
+                <div class="metric-label">Participants</div>
+                <div class="metric-value">{metrics["total_participants"]}</div>
+                <div class="metric-detail">Unique interaction records</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -2276,15 +1597,9 @@ elif page == "Impact Observatory":
         c2.markdown(
             f"""
             <div class="metric-card">
-                <div class="metric-label">
-                    Curiosity Shift
-                </div>
-                <div class="metric-value">
-                    {curiosity_change}
-                </div>
-                <div class="metric-detail">
-                    Pre → post
-                </div>
+                <div class="metric-label">Curiosity Shift</div>
+                <div class="metric-value">{curiosity_change}</div>
+                <div class="metric-detail">Pre → post</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -2299,15 +1614,9 @@ elif page == "Impact Observatory":
         c3.markdown(
             f"""
             <div class="metric-card">
-                <div class="metric-label">
-                    Knowledge Shift
-                </div>
-                <div class="metric-value">
-                    {knowledge_change}
-                </div>
-                <div class="metric-detail">
-                    Self-rated pre → post
-                </div>
+                <div class="metric-label">Knowledge Shift</div>
+                <div class="metric-value">{knowledge_change}</div>
+                <div class="metric-detail">Self-rated pre → post</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -2322,15 +1631,9 @@ elif page == "Impact Observatory":
         c4.markdown(
             f"""
             <div class="metric-card">
-                <div class="metric-label">
-                    Follow-through
-                </div>
-                <div class="metric-value">
-                    {follow_rate}
-                </div>
-                <div class="metric-detail">
-                    Delayed self-report
-                </div>
+                <div class="metric-label">Follow-through</div>
+                <div class="metric-value">{follow_rate}</div>
+                <div class="metric-detail">Delayed self-report</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -2342,116 +1645,60 @@ elif page == "Impact Observatory":
         )
 
         if ai_client is not None:
-
-            if st.button(
-                "Interpret Impact With Gemini",
-                type="primary",
-                use_container_width=True,
-            ):
-
-                with st.spinner(
-                    "Interpreting measured engagement patterns..."
-                ):
-
+            if st.button("Interpret Impact With Gemini", type="primary", use_container_width=True):
+                with st.spinner("Interpreting measured engagement patterns..."):
                     try:
-
-                        interpretation = interpret_impact(
-                            metrics,
-                            ai_client,
-                            selected_model,
-                        )
+                        interpretation = interpret_impact(metrics, ai_client, selected_model)
 
                         st.markdown(
                             f"""
                             <div class="premium-card">
-
-                                <div class="eyebrow">
-                                    Summary
-                                </div>
-
-                                <p style="
-                                    color:#f5f5f7;
-                                    font-size:1.05rem;
-                                ">
-                                    {interpretation.summary}
-                                </p>
-
+                                <div class="eyebrow">Summary</div>
+                                <p style="color:#f5f5f7; font-size:1.05rem;">{interpretation.summary}</p>
                             </div>
                             """,
                             unsafe_allow_html=True,
                         )
 
-                        c1, c2 = st.columns(2)
-
-                        with c1:
-
+                        col1, col2 = st.columns(2)
+                        with col1:
                             st.markdown(
                                 f"""
                                 <div class="premium-card">
-
-                                    <div class="eyebrow">
-                                        Strongest Signal
-                                    </div>
-
-                                    <p>
-                                        {interpretation.strongest_signal}
-                                    </p>
-
+                                    <div class="eyebrow">Strongest Signal</div>
+                                    <p>{interpretation.strongest_signal}</p>
+                                </div>
+                                """,
+                                unsafe_allow_html=True,
+                            )
+                        with col2:
+                            st.markdown(
+                                f"""
+                                <div class="premium-card">
+                                    <div class="eyebrow">Weakest Signal</div>
+                                    <p>{interpretation.weakest_signal}</p>
                                 </div>
                                 """,
                                 unsafe_allow_html=True,
                             )
 
-                        with c2:
-
-                            st.markdown(
-                                f"""
-                                <div class="premium-card">
-
-                                    <div class="eyebrow">
-                                        Weakest Signal
-                                    </div>
-
-                                    <p>
-                                        {interpretation.weakest_signal}
-                                    </p>
-
-                                </div>
-                                """,
-                                unsafe_allow_html=True,
-                            )
-
-                        st.markdown(
-                            "<div class='section-title'>Plausible Mechanisms</div>",
-                            unsafe_allow_html=True,
-                        )
-
+                        st.markdown("<div class='section-title'>Plausible Mechanisms</div>", unsafe_allow_html=True)
                         for item in interpretation.plausible_mechanisms:
-
                             st.markdown(
                                 f"""
                                 <div class="evidence interpreted">
-                                    <div class="evidence-body">
-                                        {item}
-                                    </div>
+                                    <div class="evidence-body">{item}</div>
                                 </div>
                                 """,
                                 unsafe_allow_html=True,
                             )
 
-                        st.markdown(
-                            "<div class='section-title'>Limitations</div>",
-                            unsafe_allow_html=True,
-                        )
-
+                        st.markdown("<div class='section-title'>Limitations</div>", unsafe_allow_html=True)
                         for item in interpretation.limitations:
-
                             st.markdown(
                                 f"""
                                 <div class="evidence speculative">
-                                    <div class="evidence-body">
-                                        {item}
-                                    </div>
+                                    <div class="evidence-body">{item}</div>
                                 </div>
                                 """,
                                 unsafe_allow_html=True,
@@ -2460,35 +1707,18 @@ elif page == "Impact Observatory":
                         st.markdown(
                             f"""
                             <div class="premium-card">
-
-                                <div class="eyebrow">
-                                    Recommended Next Measurement
-                                </div>
-
-                                <p>
-                                    {interpretation.next_measurement}
-                                </p>
-
+                                <div class="eyebrow">Recommended Next Measurement</div>
+                                <p>{interpretation.next_measurement}</p>
                             </div>
                             """,
                             unsafe_allow_html=True,
                         )
 
                     except Exception as error:
-
-                        st.error(
-                            "Gemini could not interpret the impact data."
-                        )
-
-                        st.caption(
-                            str(error)
-                        )
-
+                        st.error("Gemini could not interpret the impact data.")
+                        st.caption(str(error))
         else:
-
-            st.info(
-                "Add GEMINI_API_KEY to enable AI interpretation."
-            )
+            st.info("Add GEMINI_API_KEY to enable AI interpretation.")
 
         # ----------------------------------------------------
         # MEMORY THEMES
@@ -2499,82 +1729,44 @@ elif page == "Impact Observatory":
             unsafe_allow_html=True,
         )
 
-        surveys = (
-            db.query(Survey)
-            .join(Interaction)
-            .filter(
-                Interaction.event_id
-                == event_record.id,
-                Survey.timing
-                == "IMMEDIATE",
-                Survey.memorability_text.isnot(None),
+        with get_db() as db:
+            surveys = (
+                db.query(Survey)
+                .join(Interaction)
+                .filter(
+                    Interaction.event_id == event_id,
+                    Survey.timing == "IMMEDIATE",
+                    Survey.memorability_text.isnot(None),
+                )
+                .all()
             )
-            .all()
-        )
-
-        valid_surveys = [
-            s
-            for s in surveys
-            if s.memorability_text
-            and s.memorability_text.strip()
-        ]
+            valid_surveys = [
+                s.memorability_text.strip()
+                for s in surveys
+                if s.memorability_text and s.memorability_text.strip()
+            ]
 
         if not valid_surveys:
-
-            st.info(
-                "No memory responses have been collected."
-            )
-
+            st.info("No memory responses have been collected.")
         elif ai_client is None:
-
-            st.info(
-                "Add GEMINI_API_KEY to enable memory-theme analysis."
-            )
-
+            st.info("Add GEMINI_API_KEY to enable memory-theme analysis.")
         else:
-
-            if st.button(
-                "Analyze Memory Themes",
-                use_container_width=True,
-            ):
-
-                for survey in valid_surveys:
-
+            if st.button("Analyze Memory Themes", use_container_width=True):
+                for text_val in valid_surveys:
                     try:
-
-                        theme = extract_theme(
-                            survey.memorability_text,
-                            ai_client,
-                            selected_model,
-                        )
-
+                        theme = extract_theme(text_val, ai_client, selected_model)
                         st.markdown(
                             f"""
                             <div class="premium-card">
-
-                                <div class="eyebrow">
-                                    {theme.confidence} confidence
-                                </div>
-
-                                <h3>
-                                    {theme.theme}
-                                </h3>
-
-                                <p>
-                                    Participant response:
-                                    "{survey.memorability_text}"
-                                </p>
-
+                                <div class="eyebrow">{theme.confidence} confidence</div>
+                                <h3>{theme.theme}</h3>
+                                <p>Participant response: "{text_val}"</p>
                             </div>
                             """,
                             unsafe_allow_html=True,
                         )
-
-                    except Exception as error:
-
-                        st.warning(
-                            "One memory response could not be analyzed."
-                        )
+                    except Exception:
+                        st.warning("One memory response could not be analyzed.")
 
         # ----------------------------------------------------
         # RAW DATA EXPORT
@@ -2585,35 +1777,21 @@ elif page == "Impact Observatory":
             unsafe_allow_html=True,
         )
 
-        export_query = (
-            db.query(Survey)
-            .join(Interaction)
-            .filter(
-                Interaction.event_id
-                == event_record.id
-            )
-        )
-
-        export_df = pd.read_sql(
-            export_query.statement,
-            db.bind,
-        )
+        with engine.connect() as conn:
+            with get_db() as db:
+                export_query = (
+                    db.query(Survey)
+                    .join(Interaction)
+                    .filter(Interaction.event_id == event_id)
+                )
+                export_df = pd.read_sql(export_query.statement, con=conn)
 
         if not export_df.empty:
-
-            csv_data = export_df.to_csv(
-                index=False
-            )
-
+            csv_data = export_df.to_csv(index=False)
             st.download_button(
                 "Export Event Data",
                 data=csv_data,
-                file_name=(
-                    f"{event_record.name}"
-                    .replace(" ", "_")
-                    .lower()
-                    + "_impact.csv"
-                ),
+                file_name=f"{event_name.replace(' ', '_').lower()}_impact.csv",
                 mime="text/csv",
                 use_container_width=True,
             )
@@ -2625,30 +1803,12 @@ elif page == "Impact Observatory":
 
 st.markdown(
     """
-    <div style="
-        margin-top:80px;
-        padding-top:25px;
-        border-top:1px solid #202023;
-        text-align:center;
-        color:#52525b;
-        font-size:0.78rem;
-        line-height:1.6;
-    ">
-
-        <strong style="color:#71717a;">
-            Ninolades Outreach Intelligence
-        </strong>
-
-        <br>
-
-        Evidence-guided science communication and engagement research.
-
-        <br><br>
-
+    <div style="margin-top:80px; padding-top:25px; border-top:1px solid #202023; text-align:center; color:#52525b; font-size:0.78rem; line-height:1.6;">
+        <strong style="color:#71717a;">Ninolades Outreach Intelligence</strong><br>
+        Evidence-guided science communication and engagement research.<br><br>
         AI-generated interpretations are synthetic hypotheses.
         They do not establish psychological, clinical, neurological,
         or causal facts about individual participants.
-
     </div>
     """,
     unsafe_allow_html=True,
