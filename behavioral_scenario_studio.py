@@ -73,9 +73,9 @@ APP_TITLE = "Outreach Intelligence Lab"
 APP_VERSION = "1.0.1"
 
 # Updated to real, currently existing Gemini endpoints
-MODEL_FLASH = "gemini-2.0-flash"
-MODEL_PRO = "gemini-1.5-pro"
-MODEL_LITE = "gemini-1.5-flash-8b"
+MODEL_FLASH = "gemini-3.6-flash"
+MODEL_PRO = "gemini-3.1-pro"
+MODEL_LITE = "gemini-3.5-flash-lite"
 
 DEFAULT_MODEL = MODEL_FLASH
 
@@ -1424,9 +1424,9 @@ with st.sidebar:
     st.markdown("---")
 
     model_options = {
-        "Gemini 2.0 Flash": MODEL_FLASH,
-        "Gemini 1.5 Pro": MODEL_PRO,
-        "Gemini 1.5 Flash-8B": MODEL_LITE,
+        "Gemini 3.6 Flash": MODEL_FLASH,
+        "Gemini 3.1 Pro": MODEL_PRO,
+        "Gemini 3.5 Flash-Lite": MODEL_LITE,
     }
 
     selected_model_label = st.selectbox(
