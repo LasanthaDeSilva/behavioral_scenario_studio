@@ -5,6 +5,7 @@ NINOLADES OUTREACH INTELLIGENCE LAB
 A self-contained Streamlit application for:
     - Designing outreach scenarios
     - Modeling likely engagement pathways
+    - Predicting real-world outcomes and metrics
     - Running a live outreach copilot
     - Recording lightweight observations
     - Comparing predicted vs observed engagement
@@ -71,7 +72,7 @@ from google.genai import types
 # ============================================================
 
 APP_TITLE = "Outreach Intelligence Lab"
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.1.0"
 
 # Updated to real, currently existing Gemini endpoints
 MODEL_FLASH = "gemini-3.6-flash"
@@ -199,29 +200,71 @@ p, label, span {
     box-shadow: 0 0 0 1px var(--accent) !important;
 }
 
+/* High-End Clean Buttons */
 .stButton button {
-    background: var(--surface-2);
+    background: rgba(255, 255, 255, 0.03);
     color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 9px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 8px;
+    font-weight: 500;
+    letter-spacing: 0.3px;
     min-height: 42px;
-    transition: all .18s ease;
+    transition: all 0.2s ease;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
 }
 
 .stButton button:hover {
-    border-color: var(--accent);
+    border-color: var(--text-secondary);
+    background: rgba(255, 255, 255, 0.06);
     color: white;
-    background: #191a20;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+    transform: translateY(-1px);
 }
 
 button[data-testid="baseButton-primary"] {
     background: var(--accent) !important;
-    border-color: var(--accent) !important;
-    color: white !important;
+    border: 1px solid var(--accent) !important;
+    color: #fff !important;
+    box-shadow: 0 2px 8px rgba(91,140,255,0.25) !important;
 }
 
 button[data-testid="baseButton-primary"]:hover {
-    filter: brightness(1.08);
+    background: #6b9aff !important;
+    border-color: #6b9aff !important;
+    box-shadow: 0 4px 14px rgba(91,140,255,0.4) !important;
+    filter: brightness(1.05);
+}
+
+/* High-End Clean Page Selector (Radio) */
+div[data-testid="stRadio"] {
+    background: transparent;
+}
+div[data-testid="stRadio"] > div {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+div[data-testid="stRadio"] label {
+    background: rgba(255, 255, 255, 0.02);
+    padding: 10px 20px;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    cursor: pointer;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+div[data-testid="stRadio"] label:hover {
+    border-color: rgba(255, 255, 255, 0.3) !important;
+    background: rgba(255, 255, 255, 0.06);
+    transform: translateY(-1px);
+}
+div[data-testid="stRadio"] label[data-checked="true"] {
+    background: var(--accent) !important;
+    border-color: var(--accent) !important;
+    box-shadow: 0 4px 12px rgba(91,140,255,0.3);
+}
+div[data-testid="stRadio"] label[data-checked="true"] p {
+    color: white !important;
+    font-weight: 600;
 }
 
 .stSlider [data-baseweb="slider"] {
@@ -641,6 +684,15 @@ class ImpactInterpretation(BaseModel):
     recommended_next_test: str
 
 
+class OutcomePrediction(BaseModel):
+    predicted_curiosity_shift: str
+    predicted_understanding_shift: str
+    predicted_engagement_rate: str
+    overall_outcome_narrative: str
+    risk_factors: List[str] = Field(min_length=1, max_length=5)
+    success_amplifiers: List[str] = Field(min_length=1, max_length=5)
+
+
 # ============================================================
 # 6. GEMINI CLIENT
 # ============================================================
@@ -798,6 +850,7 @@ DEFAULT_STATE = {
     "last_forward_model": None,
     "last_counterfactual": None,
     "last_impact_interpretation": None,
+    "last_prediction": None,
 }
 
 for key, value in DEFAULT_STATE.items():
@@ -808,6 +861,17 @@ for key, value in DEFAULT_STATE.items():
 # ============================================================
 # 9. HELPER FUNCTIONS
 # ============================================================
+
+def render_html(html_str: str):
+    """
+    Safely renders HTML by removing leading spaces to prevent
+    Streamlit's Markdown engine from misinterpreting indented
+    HTML tags (like <div>) as code blocks (which produces the
+    </div> bug).
+    """
+    safe_html = "\n".join([line.lstrip() for line in html_str.split("\n")])
+    st.markdown(safe_html, unsafe_allow_html=True)
+
 
 def utc_now():
     return datetime.now(timezone.utc)
@@ -1336,7 +1400,7 @@ Use only information contained in the response.
 
 
 # ============================================================
-# 15. IMPACT INTERPRETATION
+# 15. IMPACT INTERPRETATION & PREDICTION
 # ============================================================
 
 def generate_impact_interpretation(
@@ -1375,31 +1439,60 @@ Do not convert the metrics into psychological diagnoses.
     )
 
 
+def generate_outcome_prediction(
+    client,
+    model_name,
+    event,
+    crowd_info,
+    situation_info
+):
+    prompt = f"""
+EVENT: {event.name}
+OBJECTIVE: {event.objective}
+TARGET AUDIENCE: {event.target_audience}
+ENVIRONMENT: {event.environment}
+SENSORY ENVIRONMENT: {event.sensory_environment}
+
+CROWD DETAILS: {crowd_info}
+SITUATIONAL CONTEXT: {situation_info}
+
+Based on these parameters, predict the likely outcomes and metrics for this outreach event.
+Be realistic, factoring in the environmental friction and the specific crowd dynamics.
+Provide synthetic estimates for curiosity shift, understanding shift, and engagement rate.
+List clear risk factors and practical ways to amplify success on the ground.
+"""
+    return run_gemini(
+        client=client,
+        model_name=model_name,
+        prompt=prompt,
+        schema=OutcomePrediction,
+        system_instruction=AI_SYSTEM,
+        temperature=0.3,
+    )
+
+
 # ============================================================
 # 16. HEADER & NAVIGATION
 # ============================================================
 
-st.markdown(
-    textwrap.dedent("""
-    <div class="hero">
-        <div class="eyebrow">Ninolades Research Platform</div>
-        <div class="hero-title">
-            Outreach Intelligence Lab
-        </div>
-        <div class="hero-subtitle">
-            A human-centered intelligence system for designing,
-            adapting, and evaluating science outreach experiences.
-            It combines structured observation, generative reasoning,
-            counterfactual exploration, and real-world impact evidence.
-        </div>
+render_html("""
+<div class="hero">
+    <div class="eyebrow">Ninolades Research Platform</div>
+    <div class="hero-title">
+        Outreach Intelligence Lab
     </div>
-    """),
-    unsafe_allow_html=True
-)
+    <div class="hero-subtitle">
+        A human-centered intelligence system for designing,
+        adapting, and evaluating science outreach experiences.
+        It combines structured observation, generative reasoning,
+        counterfactual exploration, and real-world impact evidence.
+    </div>
+</div>
+""")
 
 st.markdown("---")
 
-header_col1, header_col2, header_col3 = st.columns([1.5, 1, 2.5])
+header_col1, header_col2, header_col3 = st.columns([1.5, 1, 3])
 
 with header_col1:
     model_options = {
@@ -1408,63 +1501,60 @@ with header_col1:
         "Gemini 3.5 Flash-Lite": MODEL_LITE,
     }
     
-    mem_model_label = st.session_state.get("mem_model_label", "Gemini 3.6 Flash")
+    if "mem_model_label" not in st.session_state:
+        st.session_state["mem_model_label"] = list(model_options.keys())[0]
+
     selected_model_label = st.selectbox(
         "Reasoning engine",
         list(model_options.keys()),
-        index=list(model_options.keys()).index(mem_model_label) if mem_model_label in model_options else 0,
+        key="mem_model_label",
         help="Choose the Gemini model used for generative analysis.",
         label_visibility="collapsed"
     )
-    st.session_state["mem_model_label"] = selected_model_label
     
     selected_model = model_options[selected_model_label]
 
-    st.markdown(
-        textwrap.dedent("""
-        <div class="small-note" style="margin-top:8px;">
-            Flash is default for live. Pro for deep analysis. Flash-Lite for volume.
-        </div>
-        """),
-        unsafe_allow_html=True
-    )
+    render_html("""
+    <div class="small-note" style="margin-top:8px;">
+        Flash is default for live. Pro for deep analysis. Flash-Lite for volume.
+    </div>
+    """)
 
 with header_col2:
     if st.button("Clean Memory", use_container_width=True):
         st.session_state.clear()
         st.rerun()
 
-    st.markdown(
-        textwrap.dedent(f"""
-        <div class="small-note" style="margin-top:8px; text-align:center;">
-            Version {APP_VERSION}
-        </div>
-        """),
-        unsafe_allow_html=True
-    )
+    render_html(f"""
+    <div class="small-note" style="margin-top:8px; text-align:center;">
+        Version {APP_VERSION}
+    </div>
+    """)
 
 with header_col3:
     page_opts = [
         "Experience Designer",
         "Live Copilot",
+        "Outcome Predictor",
         "Impact Observatory",
         "Counterfactual Lab",
         "Methodology",
     ]
-    mem_page = st.session_state.get("mem_page", "Experience Designer")
+    
+    if "mem_page" not in st.session_state:
+        st.session_state["mem_page"] = page_opts[0]
+        
     page = st.radio(
         "Workspace",
         page_opts,
-        index=page_opts.index(mem_page) if mem_page in page_opts else 0,
+        key="mem_page",
         horizontal=True,
         label_visibility="collapsed"
     )
-    st.session_state["mem_page"] = page
 
 st.markdown("---")
 
 api_key = get_api_key()
-
 client = create_gemini_client(api_key)
 
 if client is None:
@@ -1487,21 +1577,16 @@ db = db_session()
 
 if page == "Experience Designer":
 
-    st.markdown(
-        textwrap.dedent('<div class="section-heading">Design an outreach experience</div>'),
-        unsafe_allow_html=True
-    )
+    render_html('<div class="section-heading">Design an outreach experience</div>')
 
     left, right = st.columns(2)
 
     with left:
-        mem_event_name = st.session_state.get("mem_event_name", "")
         event_name = st.text_input(
             "Experience name",
-            value=mem_event_name,
-            placeholder="e.g. Saturn Under the Southern Sky"
+            key="mem_event_name",
+            placeholder="e.g. Science Under the Stars or Local Ecology Walk"
         )
-        st.session_state["mem_event_name"] = event_name
 
         obj_opts = [
             "Curiosity",
@@ -1512,13 +1597,11 @@ if page == "Experience Designer":
             "Independent follow-through",
             "General engagement",
         ]
-        mem_obj = st.session_state.get("mem_objective", obj_opts[0])
         objective = st.selectbox(
             "Primary objective",
             obj_opts,
-            index=obj_opts.index(mem_obj) if mem_obj in obj_opts else 0
+            key="mem_objective"
         )
-        st.session_state["mem_objective"] = objective
 
         aud_opts = [
             "General public",
@@ -1529,87 +1612,62 @@ if page == "Experience Designer":
             "Eco-tourists",
             "Mixed audience",
         ]
-        mem_aud = st.session_state.get("mem_audience", aud_opts[0])
         target_audience = st.selectbox(
             "Audience",
             aud_opts,
-            index=aud_opts.index(mem_aud) if mem_aud in aud_opts else 0
+            key="mem_audience"
         )
-        st.session_state["mem_audience"] = target_audience
 
     with right:
-        mem_env = st.session_state.get("mem_environment", "")
         environment = st.text_input(
             "Physical environment",
-            value=mem_env,
+            key="mem_environment",
             placeholder="Dark-sky lawn, school courtyard, museum..."
         )
-        st.session_state["mem_environment"] = environment
 
-        mem_aco = st.session_state.get("mem_acoustic", "")
         acoustic_environment = st.text_input(
             "Acoustic / musical environment",
-            value=mem_aco,
-            placeholder="Silent, ambient sound, live ukulele..."
+            key="mem_acoustic",
+            placeholder="Silent, ambient sound, live acoustic..."
         )
-        st.session_state["mem_acoustic"] = acoustic_environment
 
-        mem_sen = st.session_state.get("mem_sensory", "")
         sensory_environment = st.text_input(
             "Relevant environmental conditions",
-            value=mem_sen,
+            key="mem_sensory",
             placeholder="Lighting, crowd density, temperature, noise..."
         )
-        st.session_state["mem_sensory"] = sensory_environment
 
-    mem_ctx = st.session_state.get("mem_context", "")
     context = st.text_area(
         "Experience description",
-        value=mem_ctx,
+        key="mem_context",
         placeholder=(
             "Describe what participants encounter, "
             "what the facilitator does, and the scientific content."
         ),
         height=130
     )
-    st.session_state["mem_context"] = context
 
-    st.markdown(
-        textwrap.dedent('<div class="section-heading">Optional design variables</div>'),
-        unsafe_allow_html=True
-    )
+    render_html('<div class="section-heading">Optional design variables</div>')
 
     design_col1, design_col2, design_col3 = st.columns(3)
 
     with design_col1:
         pac_opts = ["Slow and contemplative", "Moderate", "Fast and energetic", "Variable"]
-        mem_pac = st.session_state.get("mem_pacing", pac_opts[0])
-        pacing = st.selectbox(
-            "Pacing",
-            pac_opts,
-            index=pac_opts.index(mem_pac) if mem_pac in pac_opts else 0
-        )
-        st.session_state["mem_pacing"] = pacing
+        if "mem_pacing" not in st.session_state:
+            st.session_state["mem_pacing"] = pac_opts[0]
+        pacing = st.selectbox("Pacing", pac_opts, key="mem_pacing")
 
     with design_col2:
         style_opts = ["Open observation", "Facilitator-led", "Question-led", "Hands-on", "Story-driven", "Mixed"]
-        mem_sty = st.session_state.get("mem_interaction_style", style_opts[0])
-        interaction_style = st.selectbox(
-            "Interaction style",
-            style_opts,
-            index=style_opts.index(mem_sty) if mem_sty in style_opts else 0
-        )
-        st.session_state["mem_interaction_style"] = interaction_style
+        if "mem_interaction_style" not in st.session_state:
+            st.session_state["mem_interaction_style"] = style_opts[0]
+        interaction_style = st.selectbox("Interaction style", style_opts, key="mem_interaction_style")
 
     with design_col3:
         aut_opts = ["High", "Moderate", "Low"]
-        mem_aut = st.session_state.get("mem_optional_choice", aut_opts[0])
-        optional_choice = st.selectbox(
-            "Participant autonomy",
-            aut_opts,
-            index=aut_opts.index(mem_aut) if mem_aut in aut_opts else 0
-        )
-        st.session_state["mem_optional_choice"] = optional_choice
+        if "mem_optional_choice" not in st.session_state:
+            st.session_state["mem_optional_choice"] = aut_opts[0]
+        optional_choice = st.selectbox("Participant autonomy", aut_opts, key="mem_optional_choice")
 
     design_data = f"""
 Pacing: {pacing}
@@ -1675,30 +1733,20 @@ Participant autonomy: {optional_choice}
 
         model = st.session_state.last_forward_model
 
-        st.markdown(
-            textwrap.dedent('<div class="section-heading">Engagement architecture</div>'),
-            unsafe_allow_html=True
-        )
+        render_html('<div class="section-heading">Engagement architecture</div>')
 
-        st.markdown(
-            textwrap.dedent(f"""
-            <div class="premium-card">
-                <div class="eyebrow">Current model</div>
-                <div style="
-                    color:white;
-                    font-size:1.25rem;
-                    margin-bottom:10px;
-                ">
-                    {clean_text(model["engagement_state"])}
-                </div>
-                <div class="small-note">
-                    This is a generated hypothesis about possible
-                    engagement dynamics, not a measurement of participants.
-                </div>
+        render_html(f"""
+        <div class="premium-card">
+            <div class="eyebrow">Current model</div>
+            <div style="color:white; font-size:1.25rem; margin-bottom:10px;">
+                {clean_text(model["engagement_state"])}
             </div>
-            """),
-            unsafe_allow_html=True
-        )
+            <div class="small-note">
+                This is a generated hypothesis about possible
+                engagement dynamics, not a measurement of participants.
+            </div>
+        </div>
+        """)
 
         cols = st.columns(3)
 
@@ -1707,42 +1755,34 @@ Participant autonomy: {optional_choice}
         ):
 
             with cols[idx]:
-
-                st.markdown(
-                    textwrap.dedent(f"""
-                    <div class="premium-card"
-                         style="height:100%;">
-                        <div class="eyebrow">
-                            Pathway {idx + 1}
-                        </div>
-                        <h3>
-                            {clean_text(pathway["pathway"])}
-                        </h3>
-                        <p>
-                            {clean_text(pathway["mechanism"])}
-                        </p>
-                        <div class="small-note">
-                            Expected signal:<br>
-                            {clean_text(pathway["expected_signal"])}
-                        </div>
-                        <br>
-                        <div class="small-note">
-                            Uncertainty:<br>
-                            {clean_text(pathway["uncertainty"])}
-                        </div>
+                render_html(f"""
+                <div class="premium-card" style="height:100%;">
+                    <div class="eyebrow">
+                        Pathway {idx + 1}
                     </div>
-                    """),
-                    unsafe_allow_html=True
-                )
+                    <h3 style="margin-top:0;">
+                        {clean_text(pathway["pathway"])}
+                    </h3>
+                    <p>
+                        {clean_text(pathway["mechanism"])}
+                    </p>
+                    <div class="small-note">
+                        Expected signal:<br>
+                        {clean_text(pathway["expected_signal"])}
+                    </div>
+                    <br>
+                    <div class="small-note">
+                        Uncertainty:<br>
+                        {clean_text(pathway["uncertainty"])}
+                    </div>
+                </div>
+                """)
 
         c1, c2 = st.columns(2)
 
         with c1:
 
-            st.markdown(
-                textwrap.dedent('<div class="section-heading">Design opportunities</div>'),
-                unsafe_allow_html=True
-            )
+            render_html('<div class="section-heading">Design opportunities</div>')
 
             for item in model[
                 "recommended_outreach_design"
@@ -1753,10 +1793,7 @@ Participant autonomy: {optional_choice}
 
         with c2:
 
-            st.markdown(
-                textwrap.dedent('<div class="section-heading">Potential friction</div>'),
-                unsafe_allow_html=True
-            )
+            render_html('<div class="section-heading">Potential friction</div>')
 
             for item in model[
                 "likely_friction_points"
@@ -1765,10 +1802,7 @@ Participant autonomy: {optional_choice}
                     f"- {item}"
                 )
 
-        st.markdown(
-            textwrap.dedent('<div class="section-heading">What should be measured?</div>'),
-            unsafe_allow_html=True
-        )
+        render_html('<div class="section-heading">What should be measured?</div>')
 
         for item in model[
             "measurement_opportunities"
@@ -1779,15 +1813,125 @@ Participant autonomy: {optional_choice}
 
 
 # ============================================================
-# 19. LIVE COPILOT
+# 19. OUTCOME PREDICTOR (NEW PAGE)
+# ============================================================
+
+elif page == "Outcome Predictor":
+
+    render_html('<div class="section-heading">Predict Outreach Outcomes</div>')
+
+    events = (
+        db.query(Event)
+        .order_by(Event.date.desc())
+        .all()
+    )
+
+    if not events:
+        st.info("Create an experience in Experience Designer first.")
+    else:
+        event_map = {
+            f"{e.name} ({e.date.strftime('%Y-%m-%d %H:%M')})": e
+            for e in events
+        }
+
+        event_keys = list(event_map.keys())
+        selected_name = st.selectbox(
+            "Select Experience",
+            event_keys,
+            key="pred_event_select"
+        )
+        
+        event = event_map[selected_name]
+
+        c1, c2 = st.columns(2)
+        with c1:
+            crowd_info = st.text_area(
+                "Crowd details & demographics",
+                placeholder="e.g. 50 enthusiastic middle schoolers, mostly beginners, excited but easily distracted...",
+                key="pred_crowd",
+                height=110
+            )
+        with c2:
+            situation_info = st.text_area(
+                "Situational context",
+                placeholder="e.g. Cloudy weather, noisy street nearby, late evening after a long day...",
+                key="pred_situation",
+                height=110
+            )
+
+        if st.button("Predict Outcome & Metrics", type="primary", use_container_width=True):
+            if client is None:
+                st.error("Gemini is unavailable.")
+            elif not crowd_info.strip() or not situation_info.strip():
+                st.error("Please provide both crowd details and situational context.")
+            else:
+                try:
+                    with st.spinner("Analyzing parameters and computing predicted outcomes..."):
+                        pred = generate_outcome_prediction(
+                            client,
+                            selected_model,
+                            event,
+                            crowd_info,
+                            situation_info
+                        )
+                        st.session_state.last_prediction = pred.model_dump()
+                except Exception as exc:
+                    st.error(f"Prediction failed: {exc}")
+
+        if st.session_state.get("last_prediction"):
+            p = st.session_state.last_prediction
+
+            render_html('<div class="section-heading">Predicted Metrics</div>')
+            m1, m2, m3 = st.columns(3)
+            with m1:
+                render_html(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Curiosity Shift</div>
+                    <div class="metric-value" style="font-size:1.4rem;">{clean_text(p['predicted_curiosity_shift'])}</div>
+                </div>
+                """)
+            with m2:
+                render_html(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Understanding Shift</div>
+                    <div class="metric-value" style="font-size:1.4rem;">{clean_text(p['predicted_understanding_shift'])}</div>
+                </div>
+                """)
+            with m3:
+                render_html(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Engagement Rate</div>
+                    <div class="metric-value" style="font-size:1.4rem;">{clean_text(p['predicted_engagement_rate'])}</div>
+                </div>
+                """)
+
+            render_html('<div class="section-heading">Outcome Narrative</div>')
+            render_html(f"""
+            <div class="premium-card">
+                <div style="color:#e5e5e7; line-height:1.7;">
+                    {clean_text(p['overall_outcome_narrative'])}
+                </div>
+            </div>
+            """)
+
+            r1, r2 = st.columns(2)
+            with r1:
+                render_html('<div class="section-heading">Risk Factors</div>')
+                for r in p["risk_factors"]:
+                    st.markdown(f"- {r}")
+            with r2:
+                render_html('<div class="section-heading">Success Amplifiers</div>')
+                for s in p["success_amplifiers"]:
+                    st.markdown(f"- {s}")
+
+
+# ============================================================
+# 20. LIVE COPILOT
 # ============================================================
 
 elif page == "Live Copilot":
 
-    st.markdown(
-        textwrap.dedent('<div class="section-heading">Live outreach copilot</div>'),
-        unsafe_allow_html=True
-    )
+    render_html('<div class="section-heading">Live outreach copilot</div>')
 
     events = (
         db.query(Event)
@@ -1809,13 +1953,11 @@ elif page == "Live Copilot":
         }
 
         event_keys = list(event_map.keys())
-        mem_live_event = st.session_state.get("mem_live_event", event_keys[0])
         chosen_name = st.selectbox(
             "Active experience",
             event_keys,
-            index=event_keys.index(mem_live_event) if mem_live_event in event_keys else 0
+            key="live_copilot_event_select"
         )
-        st.session_state["mem_live_event"] = chosen_name
 
         event = event_map[chosen_name]
 
@@ -1862,25 +2004,19 @@ elif page == "Live Copilot":
                 st.session_state.active_interaction_id = None
                 st.rerun()
 
-            st.markdown(
-                textwrap.dedent(f"""
-                <div class="premium-card">
-                    <div class="eyebrow">
-                        Active interaction
-                    </div>
-                    <div style="
-                        color:white;
-                        font-size:1.2rem;
-                    ">
-                        {clean_text(interaction.participant_code)}
-                    </div>
-                    <div class="small-note">
-                        Anonymous interaction code.
-                    </div>
+            render_html(f"""
+            <div class="premium-card">
+                <div class="eyebrow">
+                    Active interaction
                 </div>
-                """),
-                unsafe_allow_html=True
-            )
+                <div style="color:white; font-size:1.2rem;">
+                    {clean_text(interaction.participant_code)}
+                </div>
+                <div class="small-note">
+                    Anonymous interaction code.
+                </div>
+            </div>
+            """)
 
             phase_opts = [
                 "Approach",
@@ -1892,132 +2028,73 @@ elif page == "Live Copilot":
                 "Reflection",
                 "Exit",
             ]
+            
+            # Using key for seamless state binding
+            if f"phase_{interaction.id}" not in st.session_state:
+                st.session_state[f"phase_{interaction.id}"] = interaction.phase
+
             phase = st.selectbox(
                 "Current phase",
                 phase_opts,
-                index=phase_opts.index(interaction.phase) if interaction.phase in phase_opts else 0
+                key=f"phase_{interaction.id}"
             )
 
             if phase != interaction.phase:
-
                 interaction.phase = phase
                 db.commit()
 
+            if f"pref_{interaction.id}" not in st.session_state:
+                st.session_state[f"pref_{interaction.id}"] = interaction.stated_preference or ""
+
             preference = st.text_input(
-                "Participant-stated preference",
-                value=interaction.stated_preference or "",
+                "Participant-stated preference (Press Enter to save)",
+                key=f"pref_{interaction.id}",
                 placeholder=(
                     "Only record what the participant explicitly states."
                 )
             )
 
-            if preference != (
-                interaction.stated_preference or ""
-            ):
-
+            if preference != (interaction.stated_preference or ""):
                 interaction.stated_preference = preference
                 db.commit()
 
-            st.markdown(
-                textwrap.dedent('<div class="section-heading">Rapid observation</div>'),
-                unsafe_allow_html=True
-            )
+            render_html('<div class="section-heading">Quick Observations</div>')
 
             observation_buttons = [
-                (
-                    "Attention",
-                    "Participant appears to be observing the target.",
-                ),
-                (
-                    "Attention",
-                    "Participant looks away from the target.",
-                ),
-                (
-                    "Participation",
-                    "Participant asks a question.",
-                ),
-                (
-                    "Participation",
-                    "Participant gives a detailed response.",
-                ),
-                (
-                    "Participation",
-                    "Participant listens without responding.",
-                ),
-                (
-                    "Reflection",
-                    "Participant pauses after the experience.",
-                ),
-                (
-                    "Friction",
-                    "Participant appears to have difficulty hearing.",
-                ),
-                (
-                    "Friction",
-                    "Environmental interruption occurs.",
-                ),
+                ("Attention", "Participant appears engaged/focused."),
+                ("Attention", "Participant looks away/distracted."),
+                ("Participation", "Participant asks a question."),
+                ("Participation", "Participant gives a detailed response."),
+                ("Participation", "Participant listens without responding."),
+                ("Reflection", "Participant pauses to reflect."),
+                ("Friction", "Participant has difficulty interacting."),
+                ("Friction", "Environmental interruption occurs."),
             ]
 
             obs_cols = st.columns(4)
-
-            for idx, (category, detail) in enumerate(
-                observation_buttons
-            ):
-
+            for idx, (category, detail) in enumerate(observation_buttons):
                 with obs_cols[idx % 4]:
+                    if st.button(detail, key=f"obs_btn_{idx}", use_container_width=True):
+                        log_observation(db, interaction.id, category, detail, "OBSERVED")
+                        st.toast("Observation recorded.")
 
-                    if st.button(
-                        detail,
-                        key=f"obs_{idx}",
-                        use_container_width=True
-                    ):
-
-                        log_observation(
-                            db,
-                            interaction.id,
-                            category,
-                            detail,
-                            "OBSERVED"
-                        )
-
-                        st.toast(
-                            "Observation recorded."
-                        )
-
-            mem_cust_obs = st.session_state.get("mem_custom_obs", "")
-            custom_obs = st.text_input(
-                "Custom observation",
-                value=mem_cust_obs,
-                placeholder=(
-                    "Describe only what was directly observed."
-                )
-            )
-            st.session_state["mem_custom_obs"] = custom_obs
-
-            if st.button(
-                "Record observation"
-            ):
-
-                if custom_obs.strip():
-
-                    log_observation(
-                        db,
-                        interaction.id,
-                        "Custom",
-                        custom_obs.strip(),
-                        "OBSERVED"
+            with st.form(key=f"custom_obs_form_{interaction.id}", clear_on_submit=True):
+                c1, c2 = st.columns([3, 1])
+                with c1:
+                    custom_obs = st.text_input(
+                        "Custom observation",
+                        placeholder="Describe only what was directly observed.",
+                        label_visibility="collapsed"
                     )
-
-                    st.success(
-                        "Observation recorded."
-                    )
-                    st.session_state["mem_custom_obs"] = ""
+                with c2:
+                    submit_obs = st.form_submit_button("Log Observation", use_container_width=True)
+                
+                if submit_obs and custom_obs.strip():
+                    log_observation(db, interaction.id, "Custom", custom_obs.strip(), "OBSERVED")
+                    st.toast("Custom observation recorded.")
                     st.rerun()
 
-            st.markdown(
-                textwrap.dedent('<div class="section-heading">Recent evidence</div>'),
-                unsafe_allow_html=True
-            )
+            render_html('<div class="section-heading">Recent evidence</div>')
 
             observations = get_recent_observations(
                 db,
@@ -2028,19 +2105,16 @@ elif page == "Live Copilot":
 
                 for observation in observations:
 
-                    st.markdown(
-                        textwrap.dedent(f"""
-                        <div class="observation-row">
-                            <span class="badge">
-                                {clean_text(observation.evidence_level)}
-                            </span>
-                            <span style="margin-left:8px;color:#e5e5e7;">
-                                {clean_text(observation.detail)}
-                            </span>
-                        </div>
-                        """),
-                        unsafe_allow_html=True
-                    )
+                    render_html(f"""
+                    <div class="observation-row">
+                        <span class="badge">
+                            {clean_text(observation.evidence_level)}
+                        </span>
+                        <span style="margin-left:8px;color:#e5e5e7;">
+                            {clean_text(observation.detail)}
+                        </span>
+                    </div>
+                    """)
 
             else:
 
@@ -2048,10 +2122,7 @@ elif page == "Live Copilot":
                     "No observations recorded yet."
                 )
 
-            st.markdown(
-                textwrap.dedent('<div class="section-heading">Adaptive guidance</div>'),
-                unsafe_allow_html=True
-            )
+            render_html('<div class="section-heading">Adaptive guidance</div>')
 
             if st.button(
                 "Generate next best outreach action",
@@ -2104,67 +2175,40 @@ elif page == "Live Copilot":
                     st.session_state.last_recommendation
                 )
 
-                st.markdown(
-                    textwrap.dedent(f"""
-                    <div class="premium-card"
-                         style="
-                         border-color:
-                         rgba(91,140,255,.35);
-                         background:
-                         linear-gradient(
-                           145deg,
-                           rgba(91,140,255,.09),
-                           rgba(91,140,255,.025)
-                         );
-                         ">
-                        <div class="eyebrow">
-                            Suggested next move
-                        </div>
-
-                        <div style="
-                            color:white;
-                            font-size:1.35rem;
-                            margin-bottom:14px;
-                        ">
-                            {clean_text(
-                                recommendation[
-                                    "recommended_action"
-                                ]
-                            )}
-                        </div>
-
-                        <div style="
-                            color:#d4d4d8;
-                            line-height:1.6;
-                        ">
-                            {clean_text(
-                                recommendation["rationale"]
-                            )}
-                        </div>
+                render_html(f"""
+                <div class="premium-card"
+                     style="
+                     border-color: rgba(91,140,255,.35);
+                     background: linear-gradient(145deg, rgba(91,140,255,.09), rgba(91,140,255,.025));
+                     ">
+                    <div class="eyebrow">
+                        Suggested next move
                     </div>
-                    """),
-                    unsafe_allow_html=True
-                )
+
+                    <div style="color:white; font-size:1.35rem; margin-bottom:14px;">
+                        {clean_text(recommendation["recommended_action"])}
+                    </div>
+
+                    <div style="color:#d4d4d8; line-height:1.6;">
+                        {clean_text(recommendation["rationale"])}
+                    </div>
+                </div>
+                """)
 
                 c1, c2 = st.columns(2)
 
                 with c1:
 
-                    st.markdown(
-                        textwrap.dedent(f"""
-                        <div class="metric-card">
-                            <div class="metric-label">
-                                Confidence
-                            </div>
-                            <div class="metric-value">
-                                {clean_text(
-                                    recommendation["confidence"]
-                                )}
-                            </div>
+                    render_html(f"""
+                    <div class="metric-card">
+                        <div class="metric-label">
+                            Confidence
                         </div>
-                        """),
-                        unsafe_allow_html=True
-                    )
+                        <div class="metric-value">
+                            {clean_text(recommendation["confidence"])}
+                        </div>
+                    </div>
+                    """)
 
                 with c2:
 
@@ -2172,28 +2216,22 @@ elif page == "Live Copilot":
                         "cognitive_estimate"
                     ]
 
-                    st.markdown(
-                        textwrap.dedent(f"""
-                        <div class="metric-card">
-                            <div class="metric-label">
-                                Model-estimated focus
-                            </div>
-                            <div class="metric-value">
-                                {estimate["focus_pct"]}%
-                            </div>
-                            <div class="metric-sub">
-                                Hypothesis only; not a
-                                physiological measurement.
-                            </div>
+                    render_html(f"""
+                    <div class="metric-card">
+                        <div class="metric-label">
+                            Model-estimated focus
                         </div>
-                        """),
-                        unsafe_allow_html=True
-                    )
+                        <div class="metric-value">
+                            {estimate["focus_pct"]}%
+                        </div>
+                        <div class="metric-sub">
+                            Hypothesis only; not a
+                            physiological measurement.
+                        </div>
+                    </div>
+                    """)
 
-                st.markdown(
-                    textwrap.dedent('<div class="section-heading">Evidence used</div>'),
-                    unsafe_allow_html=True
-                )
+                render_html('<div class="section-heading">Evidence used</div>')
 
                 for evidence in recommendation[
                     "evidence"
@@ -2202,10 +2240,7 @@ elif page == "Live Copilot":
                         f"- {evidence}"
                     )
 
-                st.markdown(
-                    textwrap.dedent('<div class="section-heading">Alternative explanation</div>'),
-                    unsafe_allow_html=True
-                )
+                render_html('<div class="section-heading">Alternative explanation</div>')
 
                 st.write(
                     recommendation[
@@ -2213,10 +2248,7 @@ elif page == "Live Copilot":
                     ]
                 )
 
-                st.markdown(
-                    textwrap.dedent('<div class="section-heading">Next observation to watch</div>'),
-                    unsafe_allow_html=True
-                )
+                render_html('<div class="section-heading">Next observation to watch</div>')
 
                 st.write(
                     recommendation[
@@ -2241,32 +2273,23 @@ elif page == "Live Copilot":
 
 
 # ============================================================
-# 20. IMPACT OBSERVATORY
+# 21. IMPACT OBSERVATORY
 # ============================================================
 
 elif page == "Impact Observatory":
 
-    st.markdown(
-        textwrap.dedent('<div class="section-heading">Real-world impact observatory</div>'),
-        unsafe_allow_html=True
-    )
+    render_html('<div class="section-heading">Real-world impact observatory</div>')
 
-    st.markdown(
-        textwrap.dedent("""
-        <div class="premium-card">
-            <div class="eyebrow">Why this exists</div>
-            <div style="
-                color:#e5e5e7;
-                line-height:1.7;
-            ">
-                The system separates what the AI predicts from what
-                actually happened. Impact is calculated from recorded
-                participant outcomes rather than generated by Gemini.
-            </div>
+    render_html("""
+    <div class="premium-card">
+        <div class="eyebrow">Why this exists</div>
+        <div style="color:#e5e5e7; line-height:1.7;">
+            The system separates what the AI predicts from what
+            actually happened. Impact is calculated from recorded
+            participant outcomes rather than generated by Gemini.
         </div>
-        """),
-        unsafe_allow_html=True
-    )
+    </div>
+    """)
 
     events = (
         db.query(Event)
@@ -2288,13 +2311,11 @@ elif page == "Impact Observatory":
         }
 
         event_keys = list(event_map.keys())
-        mem_obs_event = st.session_state.get("mem_obs_event", event_keys[0])
         selected_name = st.selectbox(
             "Experience",
             event_keys,
-            index=event_keys.index(mem_obs_event) if mem_obs_event in event_keys else 0
+            key="obs_event_select"
         )
-        st.session_state["mem_obs_event"] = selected_name
 
         event = event_map[selected_name]
 
@@ -2313,25 +2334,19 @@ elif page == "Impact Observatory":
             cols = st.columns(4)
 
             cols[0].markdown(
-                textwrap.dedent(f"""
+                f"""
                 <div class="metric-card">
-                    <div class="metric-label">
-                        Participants
-                    </div>
-                    <div class="metric-value">
-                        {metrics["participants"]}
-                    </div>
+                    <div class="metric-label">Participants</div>
+                    <div class="metric-value">{metrics["participants"]}</div>
                 </div>
-                """),
+                """,
                 unsafe_allow_html=True
             )
 
             cols[1].markdown(
-                textwrap.dedent(f"""
+                f"""
                 <div class="metric-card">
-                    <div class="metric-label">
-                        Curiosity change
-                    </div>
+                    <div class="metric-label">Curiosity change</div>
                     <div class="metric-value">
                         {
                             "—"
@@ -2339,20 +2354,16 @@ elif page == "Impact Observatory":
                             else f'{metrics["curiosity_change"]:+.2f}'
                         }
                     </div>
-                    <div class="metric-sub">
-                        Paired baseline → immediate
-                    </div>
+                    <div class="metric-sub">Paired baseline → immediate</div>
                 </div>
-                """),
+                """,
                 unsafe_allow_html=True
             )
 
             cols[2].markdown(
-                textwrap.dedent(f"""
+                f"""
                 <div class="metric-card">
-                    <div class="metric-label">
-                        Understanding change
-                    </div>
+                    <div class="metric-label">Understanding change</div>
                     <div class="metric-value">
                         {
                             "—"
@@ -2360,20 +2371,16 @@ elif page == "Impact Observatory":
                             else f'{metrics["understanding_change"]:+.2f}'
                         }
                     </div>
-                    <div class="metric-sub">
-                        Paired baseline → immediate
-                    </div>
+                    <div class="metric-sub">Paired baseline → immediate</div>
                 </div>
-                """),
+                """,
                 unsafe_allow_html=True
             )
 
             cols[3].markdown(
-                textwrap.dedent(f"""
+                f"""
                 <div class="metric-card">
-                    <div class="metric-label">
-                        Follow-through
-                    </div>
+                    <div class="metric-label">Follow-through</div>
                     <div class="metric-value">
                         {
                             "—"
@@ -2381,18 +2388,13 @@ elif page == "Impact Observatory":
                             else f'{metrics["follow_through_rate"]:.1f}%'
                         }
                     </div>
-                    <div class="metric-sub">
-                        Delayed self-report
-                    </div>
+                    <div class="metric-sub">Delayed self-report</div>
                 </div>
-                """),
+                """,
                 unsafe_allow_html=True
             )
 
-            st.markdown(
-                textwrap.dedent('<div class="section-heading">Outcome signals</div>'),
-                unsafe_allow_html=True
-            )
+            render_html('<div class="section-heading">Outcome signals</div>')
 
             signal_data = {
                 "Curiosity": metrics[
@@ -2433,10 +2435,7 @@ elif page == "Impact Observatory":
                     "are needed to calculate change."
                 )
 
-            st.markdown(
-                textwrap.dedent('<div class="section-heading">Delayed indicators</div>'),
-                unsafe_allow_html=True
-            )
+            render_html('<div class="section-heading">Delayed indicators</div>')
 
             d1, d2 = st.columns(2)
 
@@ -2454,10 +2453,7 @@ elif page == "Impact Observatory":
                 metrics["surveyed"]
             )
 
-            st.markdown(
-                textwrap.dedent('<div class="section-heading">AI interpretation</div>'),
-                unsafe_allow_html=True
-            )
+            render_html('<div class="section-heading">AI interpretation</div>')
 
             st.caption(
                 "Gemini interprets the measurements below; "
@@ -2508,35 +2504,22 @@ elif page == "Impact Observatory":
                     st.session_state.last_impact_interpretation
                 )
 
-                st.markdown(
-                    textwrap.dedent(f"""
-                    <div class="premium-card">
-                        <div class="eyebrow">
-                            Interpretation
-                        </div>
-                        <div style="
-                            color:#e5e5e7;
-                            line-height:1.7;
-                        ">
-                            {clean_text(
-                                interpretation[
-                                    "overall_interpretation"
-                                ]
-                            )}
-                        </div>
+                render_html(f"""
+                <div class="premium-card">
+                    <div class="eyebrow">
+                        Interpretation
                     </div>
-                    """),
-                    unsafe_allow_html=True
-                )
+                    <div style="color:#e5e5e7; line-height:1.7;">
+                        {clean_text(interpretation["overall_interpretation"])}
+                    </div>
+                </div>
+                """)
 
                 c1, c2 = st.columns(2)
 
                 with c1:
 
-                    st.markdown(
-                        textwrap.dedent('<div class="section-heading">Strongest signal</div>'),
-                        unsafe_allow_html=True
-                    )
+                    render_html('<div class="section-heading">Strongest signal</div>')
 
                     st.write(
                         interpretation[
@@ -2546,10 +2529,7 @@ elif page == "Impact Observatory":
 
                 with c2:
 
-                    st.markdown(
-                        textwrap.dedent('<div class="section-heading">Weakest signal</div>'),
-                        unsafe_allow_html=True
-                    )
+                    render_html('<div class="section-heading">Weakest signal</div>')
 
                     st.write(
                         interpretation[
@@ -2557,10 +2537,7 @@ elif page == "Impact Observatory":
                         ]
                     )
 
-                st.markdown(
-                    textwrap.dedent('<div class="section-heading">Plausible mechanisms</div>'),
-                    unsafe_allow_html=True
-                )
+                render_html('<div class="section-heading">Plausible mechanisms</div>')
 
                 for item in interpretation[
                     "plausible_mechanisms"
@@ -2569,10 +2546,7 @@ elif page == "Impact Observatory":
                         f"- {item}"
                     )
 
-                st.markdown(
-                    textwrap.dedent('<div class="section-heading">Alternative explanations</div>'),
-                    unsafe_allow_html=True
-                )
+                render_html('<div class="section-heading">Alternative explanations</div>')
 
                 for item in interpretation[
                     "alternative_explanations"
@@ -2581,10 +2555,7 @@ elif page == "Impact Observatory":
                         f"- {item}"
                     )
 
-                st.markdown(
-                    textwrap.dedent('<div class="section-heading">Recommended next test</div>'),
-                    unsafe_allow_html=True
-                )
+                render_html('<div class="section-heading">Recommended next test</div>')
 
                 st.info(
                     interpretation[
@@ -2594,15 +2565,12 @@ elif page == "Impact Observatory":
 
 
 # ============================================================
-# 21. COUNTERFACTUAL LAB
+# 22. COUNTERFACTUAL LAB
 # ============================================================
 
 elif page == "Counterfactual Lab":
 
-    st.markdown(
-        textwrap.dedent('<div class="section-heading">Counterfactual experiment lab</div>'),
-        unsafe_allow_html=True
-    )
+    render_html('<div class="section-heading">Counterfactual experiment lab</div>')
 
     events = (
         db.query(Event)
@@ -2624,52 +2592,46 @@ elif page == "Counterfactual Lab":
         }
 
         event_keys = list(event_map.keys())
-        mem_cf_event = st.session_state.get("mem_cf_event", event_keys[0])
         selected_name = st.selectbox(
             "Experience",
             event_keys,
-            index=event_keys.index(mem_cf_event) if mem_cf_event in event_keys else 0
+            key="cf_event_select"
         )
-        st.session_state["mem_cf_event"] = selected_name
-
+        
         event = event_map[selected_name]
 
-        st.markdown(
-            textwrap.dedent("""
-            <div class="premium-card">
-                <div class="eyebrow">
-                    Counterfactual reasoning
-                </div>
-                <div class="small-note">
-                    Change one meaningful variable while keeping
-                    the conceptual baseline constant. This does
-                    not create experimental evidence; it helps
-                    generate testable outreach hypotheses.
-                </div>
+        render_html("""
+        <div class="premium-card">
+            <div class="eyebrow">
+                Counterfactual reasoning
             </div>
-            """),
-            unsafe_allow_html=True
-        )
+            <div class="small-note">
+                Change one meaningful variable while keeping
+                the conceptual baseline constant. This does
+                not create experimental evidence; it helps
+                generate testable outreach hypotheses.
+            </div>
+        </div>
+        """)
 
-        mem_cf_var = st.session_state.get("mem_cf_var", "")
         variable_change = st.text_area(
             "What would you change?",
-            value=mem_cf_var,
+            key="cf_variable_change",
             placeholder=(
                 "What if the live music stopped during direct "
-                "telescope observation?"
+                "observation?"
             ),
             height=100
         )
-        st.session_state["mem_cf_var"] = variable_change
 
-        mem_cf_design = st.session_state.get("mem_cf_design", event.context or "")
+        if "cf_design_description" not in st.session_state:
+            st.session_state["cf_design_description"] = event.context or ""
+            
         design_description = st.text_area(
             "Current design",
-            value=mem_cf_design,
+            key="cf_design_description",
             height=100
         )
-        st.session_state["mem_cf_design"] = design_description
 
         if st.button(
             "Run counterfactual",
@@ -2719,61 +2681,49 @@ elif page == "Counterfactual Lab":
 
             cf = st.session_state.last_counterfactual
 
-            st.markdown(
-                textwrap.dedent(f"""
-                <div class="premium-card">
-                    <div class="eyebrow">
-                        Changed variable
-                    </div>
-                    <h3>
-                        {clean_text(cf["changed_variable"])}
-                    </h3>
-                    <p>
-                        {clean_text(cf["expected_difference"])}
-                    </p>
+            render_html(f"""
+            <div class="premium-card">
+                <div class="eyebrow">
+                    Changed variable
                 </div>
-                """),
-                unsafe_allow_html=True
-            )
+                <h3 style="margin-top:0;">
+                    {clean_text(cf["changed_variable"])}
+                </h3>
+                <p>
+                    {clean_text(cf["expected_difference"])}
+                </p>
+            </div>
+            """)
 
             c1, c2 = st.columns(2)
 
             with c1:
 
-                st.markdown(
-                    textwrap.dedent(f"""
-                    <div class="premium-card">
-                        <div class="eyebrow">
-                            Baseline
-                        </div>
-                        <div style="color:#e5e5e7;">
-                            {clean_text(cf["before_state"])}
-                        </div>
+                render_html(f"""
+                <div class="premium-card">
+                    <div class="eyebrow">
+                        Baseline
                     </div>
-                    """),
-                    unsafe_allow_html=True
-                )
+                    <div style="color:#e5e5e7;">
+                        {clean_text(cf["before_state"])}
+                    </div>
+                </div>
+                """)
 
             with c2:
 
-                st.markdown(
-                    textwrap.dedent(f"""
-                    <div class="premium-card">
-                        <div class="eyebrow">
-                            Counterfactual
-                        </div>
-                        <div style="color:#e5e5e7;">
-                            {clean_text(cf["after_state"])}
-                        </div>
+                render_html(f"""
+                <div class="premium-card">
+                    <div class="eyebrow">
+                        Counterfactual
                     </div>
-                    """),
-                    unsafe_allow_html=True
-                )
+                    <div style="color:#e5e5e7;">
+                        {clean_text(cf["after_state"])}
+                    </div>
+                </div>
+                """)
 
-            st.markdown(
-                textwrap.dedent('<div class="section-heading">Predicted effects</div>'),
-                unsafe_allow_html=True
-            )
+            render_html('<div class="section-heading">Predicted effects</div>')
 
             for effect in cf[
                 "predicted_effects"
@@ -2783,10 +2733,7 @@ elif page == "Counterfactual Lab":
                     f"- {effect}"
                 )
 
-            st.markdown(
-                textwrap.dedent('<div class="section-heading">Uncertainty</div>'),
-                unsafe_allow_html=True
-            )
+            render_html('<div class="section-heading">Uncertainty</div>')
 
             st.warning(
                 cf["uncertainty"]
@@ -2794,15 +2741,12 @@ elif page == "Counterfactual Lab":
 
 
 # ============================================================
-# 22. METHODOLOGY
+# 23. METHODOLOGY
 # ============================================================
 
 elif page == "Methodology":
 
-    st.markdown(
-        textwrap.dedent('<div class="section-heading">Science and methodology</div>'),
-        unsafe_allow_html=True
-    )
+    render_html('<div class="section-heading">Science and methodology</div>')
 
     sections = [
 
@@ -2930,30 +2874,27 @@ elif page == "Methodology":
 
     for title, body in sections:
 
-        st.markdown(
-            textwrap.dedent(f"""
-            <div class="premium-card">
-                <div class="eyebrow">
-                    Method
-                </div>
-                <h3>
-                    {title}
-                </h3>
-                <div style="
-                    color:#a1a1aa;
-                    line-height:1.75;
-                    white-space:pre-line;
-                ">
-                    {body}
-                </div>
+        render_html(f"""
+        <div class="premium-card">
+            <div class="eyebrow">
+                Method
             </div>
-            """),
-            unsafe_allow_html=True
-        )
+            <h3 style="margin-top:0;">
+                {title}
+            </h3>
+            <div style="
+                color:#a1a1aa;
+                line-height:1.75;
+                white-space:pre-line;
+            ">
+                {body}
+            </div>
+        </div>
+        """)
 
 
 # ============================================================
-# 23. OPTIONAL LIGHTWEIGHT IMPACT CAPTURE
+# 24. OPTIONAL LIGHTWEIGHT IMPACT CAPTURE
 # ============================================================
 
 st.markdown("---")
@@ -2992,14 +2933,11 @@ with st.expander(
         }
 
         event_keys = list(event_map.keys())
-        mem_surv_evt = st.session_state.get("mem_surv_event", event_keys[0])
         selected_event_name = st.selectbox(
             "Experience",
             event_keys,
-            index=event_keys.index(mem_surv_evt) if mem_surv_evt in event_keys else 0,
-            key="survey_event"
+            key="survey_event_select"
         )
-        st.session_state["mem_surv_event"] = selected_event_name
 
         event = event_map[
             selected_event_name
@@ -3030,13 +2968,11 @@ with st.expander(
             }
 
             int_keys = list(interaction_map.keys())
-            mem_surv_part = st.session_state.get("mem_surv_participant", int_keys[0])
             selected_participant = st.selectbox(
                 "Participant interaction",
                 int_keys,
-                index=int_keys.index(mem_surv_part) if mem_surv_part in int_keys else 0
+                key="survey_participant_select"
             )
-            st.session_state["mem_surv_participant"] = selected_participant
 
             interaction = interaction_map[
                 selected_participant
@@ -3048,53 +2984,45 @@ with st.expander(
                 "DELAYED_24H",
                 "DELAYED_7D",
             ]
-            mem_surv_tim = st.session_state.get("mem_surv_timing", timing_opts[0])
             survey_timing = st.selectbox(
                 "Measurement point",
                 timing_opts,
-                index=timing_opts.index(mem_surv_tim) if mem_surv_tim in timing_opts else 0
+                key="survey_timing_select"
             )
-            st.session_state["mem_surv_timing"] = survey_timing
 
             with st.form(
-                "outcome_capture"
+                "outcome_capture",
+                clear_on_submit=True
             ):
                 
-                mem_surv_cur = st.session_state.get("mem_surv_curiosity", 5)
                 curiosity = st.slider(
                     "Curiosity",
                     1,
                     10,
-                    mem_surv_cur
+                    5
                 )
 
-                mem_surv_und = st.session_state.get("mem_surv_understanding", 50)
                 understanding = st.slider(
                     "Scientific understanding",
                     0,
                     100,
-                    mem_surv_und
+                    50
                 )
 
-                mem_surv_con = st.session_state.get("mem_surv_confidence", 5)
                 confidence = st.slider(
                     "Confidence asking/answering questions",
                     1,
                     10,
-                    mem_surv_con
+                    5
                 )
 
-                mem_surv_rec = st.session_state.get("mem_surv_recall", "")
                 recall = st.text_area(
                     "What do you remember most?",
-                    value=mem_surv_rec,
                     height=90
                 )
 
-                mem_surv_fol = st.session_state.get("mem_surv_follow", False)
                 follow_through = st.checkbox(
-                    "I voluntarily explored something further afterward",
-                    value=mem_surv_fol
+                    "I voluntarily explored something further afterward"
                 )
 
                 submitted = st.form_submit_button(
@@ -3102,12 +3030,6 @@ with st.expander(
                 )
 
                 if submitted:
-
-                    st.session_state["mem_surv_curiosity"] = curiosity
-                    st.session_state["mem_surv_understanding"] = understanding
-                    st.session_state["mem_surv_confidence"] = confidence
-                    st.session_state["mem_surv_recall"] = recall
-                    st.session_state["mem_surv_follow"] = follow_through
 
                     survey = Survey(
                         id=str(uuid.uuid4()),
@@ -3142,50 +3064,47 @@ with st.expander(
 
 
 # ============================================================
-# 24. FOOTER
+# 25. FOOTER
 # ============================================================
 
-st.markdown(
-    textwrap.dedent("""
+render_html("""
+<div style="
+    text-align:center;
+    margin-top:70px;
+    padding-top:25px;
+    border-top:1px solid #202024;
+    color:#52525b;
+    font-size:.78rem;
+    line-height:1.6;
+">
     <div style="
-        text-align:center;
-        margin-top:70px;
-        padding-top:25px;
-        border-top:1px solid #202024;
-        color:#52525b;
-        font-size:.78rem;
-        line-height:1.6;
+        color:#71717a;
+        margin-bottom:8px;
     ">
-        <div style="
-            color:#71717a;
-            margin-bottom:8px;
-        ">
-            Outreach Intelligence Lab
-        </div>
-
-        <div>
-            Exploratory generative modeling and
-            evidence-informed science outreach.
-        </div>
-
-        <div style="
-            max-width:850px;
-            margin:12px auto 0 auto;
-        ">
-            AI-generated predictions are synthetic hypotheses.
-            They do not establish psychological, neurological,
-            clinical, or causal facts about individuals.
-            Real-world impact metrics are calculated from recorded
-            observations and participant-reported outcomes.
-        </div>
+        Outreach Intelligence Lab
     </div>
-    """),
-    unsafe_allow_html=True
-)
+
+    <div>
+        Exploratory generative modeling and
+        evidence-informed science outreach.
+    </div>
+
+    <div style="
+        max-width:850px;
+        margin:12px auto 0 auto;
+    ">
+        AI-generated predictions are synthetic hypotheses.
+        They do not establish psychological, neurological,
+        clinical, or causal facts about individuals.
+        Real-world impact metrics are calculated from recorded
+        observations and participant-reported outcomes.
+    </div>
+</div>
+""")
 
 
 # ============================================================
-# 25. CLEANUP
+# 26. CLEANUP
 # ============================================================
 
 db.close()
