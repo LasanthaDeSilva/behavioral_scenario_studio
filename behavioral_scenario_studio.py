@@ -11,25 +11,73 @@ from google.genai import types
 # PYDANTIC SCHEMAS (FORCES JSON OUTPUTS)
 # ==========================================
 
-# --- Schemas for Forward Predictor ---
+class CognitiveStateMetrics(BaseModel):
+    cognitive_bandwidth_pct: int = Field(
+        ge=0, le=100, 
+        description="Estimated remaining mental capacity available for processing new information (0 = overwhelmed, 100 = clear)."
+    )
+    bandwidth_rationale: str = Field(
+        description="Key factors consuming or preserving cognitive bandwidth in this setup."
+    )
+    focus_level_pct: int = Field(
+        ge=0, le=100, 
+        description="Estimated intensity/direction of attention toward the primary target (0 = distracted, 100 = hyper-focused)."
+    )
+    focus_rationale: str = Field(
+        description="Primary sensory stimuli or internal states driving or pulling attention."
+    )
+
+class SensoryLoadBreakdown(BaseModel):
+    visual_load_pct: int = Field(ge=0, le=100, description="Estimated visual processing load (0-100%).")
+    auditory_load_pct: int = Field(ge=0, le=100, description="Estimated auditory processing load (0-100%).")
+    social_env_load_pct: int = Field(ge=0, le=100, description="Estimated social and environmental stress/load (0-100%).")
+    overload_risk: Literal["Low", "Moderate", "High", "Critical"] = Field(description="Overall risk of multi-channel sensory clutter.")
+
+class OutreachProtocol(BaseModel):
+    micro_interventions: list[str] = Field(
+        min_length=3, max_length=3, 
+        description="Exactly 3 specific, real-time actions for the facilitator on the ground."
+    )
+    delivery_tempo_guide: str = Field(
+        description="Recommended speaking speed, tone, question style, and silence timing."
+    )
+    awe_to_friction_ratio: str = Field(
+        description="Qualitative assessment of Awe vs. Discomfort/Jargon friction."
+    )
+    window_of_teaching: str = Field(
+        description="When during the experience the participant is most receptive to scientific concepts."
+    )
+
+class PhaseTrajectory(BaseModel):
+    queue_phase_strategy: str = Field(description="Strategy for the Queue/Waiting phase.")
+    eyepiece_phase_strategy: str = Field(description="Strategy for the Eyepiece Direct Observation phase.")
+    post_observation_strategy: str = Field(description="Strategy for the Post-Observation Reflection phase.")
+
+# --- Forward Predictor Schemas ---
 class PredictedAction(BaseModel):
     action: str = Field(description="A highly specific, plausible action this hypothetical profile might take.")
-    raw_weight: int = Field(ge=1, le=100, description="Relative plausibility score (1-100) of this outcome occurring based on heuristic model weights, not statistically calibrated probability.")
-    rationale: str = Field(description="Explanation of why, detailing mechanisms and specific trait/state/context/sensory interactions. Acknowledge unknown factors if relevant.")
+    raw_weight: int = Field(ge=1, le=100, description="Relative plausibility score (1-100).")
+    rationale: str = Field(description="Mechanism detailing trait/state/context/sensory interactions.")
 
 class ForwardPrediction(BaseModel):
-    modifier_relevance: str = Field(description="Analysis of which specific modifiers actually mattered here, and which were irrelevant and had negligible influence.")
+    modifier_relevance: str = Field(description="Analysis of which specific modifiers actually mattered here.")
     uncertainty_level: Literal["Low", "Moderate", "High"] = Field(description="Rate the uncertainty of this generation.")
     uncertainty_reason: str = Field(description="Explanation of why the generation carries this level of uncertainty.")
-    predictions: list[PredictedAction] = Field(min_length=3, max_length=3, description="Exactly 3 plausible actions, ranked by relative plausibility.")
+    cognitive_metrics: CognitiveStateMetrics
+    sensory_load: SensoryLoadBreakdown
+    outreach_protocol: OutreachProtocol
+    phase_trajectory: PhaseTrajectory
+    predictions: list[PredictedAction] = Field(min_length=3, max_length=3, description="Exactly 3 plausible actions.")
 
 class CounterfactualResponse(BaseModel):
-    identified_variable_changed: str = Field(description="The specific variable, state, or context detail that was altered from the baseline configuration.")
-    comparison_summary: str = Field(description="Explanation of how and why this specific change alters the behavioral/engagement landscape compared to the baseline.")
-    new_predictions: list[PredictedAction] = Field(min_length=3, max_length=3, description="Exactly 3 new plausible actions based on the modified scenario.")
+    identified_variable_changed: str = Field(description="The specific variable, state, or context detail altered.")
+    comparison_summary: str = Field(description="Explanation of how and why this specific change alters engagement.")
+    new_cognitive_metrics: CognitiveStateMetrics
+    new_sensory_load: SensoryLoadBreakdown
+    new_outreach_protocol: OutreachProtocol
+    new_predictions: list[PredictedAction] = Field(min_length=3, max_length=3, description="Exactly 3 new plausible actions.")
 
-
-# --- Schemas for Competing Explanations (Tab 2) ---
+# --- Competing Explanations Schemas (Tab 2) ---
 class HexacoScores(BaseModel):
     Honesty_Humility: str = Field(description="Qualitative range or 'Insufficient information'.")
     Emotionality: str = Field(description="Qualitative range or 'Insufficient information'.")
@@ -39,13 +87,13 @@ class HexacoScores(BaseModel):
     Openness: str = Field(description="Qualitative range or 'Insufficient information'.")
 
 class EvidenceBreakdown(BaseModel):
-    directly_supported: str = Field(description="What we actually observed in the behavior.")
+    directly_supported: str = Field(description="What was actually observed in the behavior.")
     interpretation: str = Field(description="What could plausibly explain it.")
-    speculation: str = Field(description="What we are assuming because information is missing.")
+    speculation: str = Field(description="What we are assuming due to missing info.")
 
 class CompetingExplanation(BaseModel):
     explanation_name: str = Field(description="Short title.")
-    compatibility: Literal["Strong", "Moderate", "Weak"] = Field(description="Compatibility with the observed behavior.")
+    compatibility: Literal["Strong", "Moderate", "Weak"] = Field(description="Compatibility with observed behavior.")
     primary_mechanism: str = Field(description="Primary driver of the behavior.")
     situational_factors: str = Field(description="What external factors could explain the behavior?")
     temporary_state: str = Field(description="What temporary internal state might matter right now?")
@@ -58,7 +106,7 @@ class BehaviorAnalysisResult(BaseModel):
     specific_uncertainty: str = Field(description="Why uncertain: specific factors we don't know.")
     cannot_be_inferred: list[str] = Field(description="Specific broad traits that CANNOT be inferred.")
     missing_information: list[str] = Field(description="Specific pieces of missing context.")
-    explanations: list[CompetingExplanation] = Field(min_length=3, max_length=3, description="Exactly 3 genuinely competing explanations.")
+    explanations: list[CompetingExplanation] = Field(min_length=3, max_length=3, description="Exactly 3 competing explanations.")
 
 
 # ==========================================
@@ -271,7 +319,6 @@ with st.sidebar:
         primary_model = "gemini-3.6-flash"
         backup_model = "gemini-3.5-flash-lite"
 
-    # Fetch key directly from Secrets without showing any text box to users
     api_key = st.secrets.get("GEMINI_API_KEY", "")
     if not api_key:
         st.error("Application configuration error: API Key missing from Secrets.")
@@ -294,6 +341,113 @@ def calculate_normalized_percentages(predictions_list):
         percentages[i] += 1
     return percentages
 
+def render_cognitive_and_sensory_dashboard(cog_metrics, sensory_load):
+    bw = cog_metrics['cognitive_bandwidth_pct']
+    focus = cog_metrics['focus_level_pct']
+    bw_color = "#4ade80" if bw > 60 else "#fbbf24" if bw > 30 else "#f87171"
+    focus_color = "#4F83F5" if focus > 60 else "#a78bfa" if focus > 30 else "#f87171"
+
+    st.markdown(f"""
+    <div class="premium-card" style="padding: 22px; margin-bottom: 24px; background-color: #121214; border: 1px solid #222226;">
+        <div style="font-size: 0.85rem; color: #4F83F5; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 16px; font-weight: 600;">
+            🧠 Cognitive Bandwidth & Attention Dynamics
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 18px;">
+            <div>
+                <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+                    <span style="font-size: 0.95rem; color: #ffffff; font-weight: 500;">Cognitive Bandwidth (Remaining Capacity)</span>
+                    <span style="font-size: 0.95rem; color: {bw_color}; font-weight: 600;">{bw}%</span>
+                </div>
+                <div class="custom-progress-bg" style="height: 8px;">
+                    <div style="background-color: {bw_color}; height: 100%; width: {bw}%; border-radius: 4px;"></div>
+                </div>
+                <div style="font-size: 0.85rem; color: #a1a1aa; margin-top: 6px;">{cog_metrics['bandwidth_rationale']}</div>
+            </div>
+            <div>
+                <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+                    <span style="font-size: 0.95rem; color: #ffffff; font-weight: 500;">Focus Level (Target Engagement)</span>
+                    <span style="font-size: 0.95rem; color: {focus_color}; font-weight: 600;">{focus}%</span>
+                </div>
+                <div class="custom-progress-bg" style="height: 8px;">
+                    <div style="background-color: {focus_color}; height: 100%; width: {focus}%; border-radius: 4px;"></div>
+                </div>
+                <div style="font-size: 0.85rem; color: #a1a1aa; margin-top: 6px;">{cog_metrics['focus_rationale']}</div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    risk = sensory_load['overload_risk']
+    risk_color = "#4ade80" if risk == "Low" else "#fbbf24" if risk == "Moderate" else "#f87171"
+    
+    st.markdown(f"""
+    <div class="premium-card" style="padding: 22px; margin-bottom: 24px; background-color: #121214; border: 1px solid #222226;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+            <div style="font-size: 0.85rem; color: #a78bfa; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600;">
+                🎛️ Multi-Channel Sensory Load & Overload Meter
+            </div>
+            <div style="background-color: #18181c; border: 1px solid {risk_color}; color: {risk_color}; font-size: 0.8rem; font-weight: 600; padding: 4px 10px; border-radius: 6px;">
+                Overload Risk: {risk}
+            </div>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px;">
+            <div>
+                <div style="font-size: 0.85rem; color: #d4d4d8; margin-bottom: 4px;">Visual Channel ({sensory_load['visual_load_pct']}%)</div>
+                <div class="custom-progress-bg" style="height: 6px;"><div style="background-color: #4F83F5; height: 100%; width: {sensory_load['visual_load_pct']}%;"></div></div>
+            </div>
+            <div>
+                <div style="font-size: 0.85rem; color: #d4d4d8; margin-bottom: 4px;">Auditory Channel ({sensory_load['auditory_load_pct']}%)</div>
+                <div class="custom-progress-bg" style="height: 6px;"><div style="background-color: #a78bfa; height: 100%; width: {sensory_load['auditory_load_pct']}%;"></div></div>
+            </div>
+            <div>
+                <div style="font-size: 0.85rem; color: #d4d4d8; margin-bottom: 4px;">Social / Environmental ({sensory_load['social_env_load_pct']}%)</div>
+                <div class="custom-progress-bg" style="height: 6px;"><div style="background-color: #fb923c; height: 100%; width: {sensory_load['social_env_load_pct']}%;"></div></div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+def render_outreach_protocol_and_trajectory(protocol, trajectory):
+    st.markdown("""
+    <div class="section-title" style="font-size: 1.2rem; color: #4ade80;">📡 Field Kit: Outreach Protocols & Facilitator Directives</div>
+    """, unsafe_allow_html=True)
+    
+    col_p, col_t = st.columns(2)
+    with col_p:
+        st.markdown(f"""
+        <div class="premium-card" style="height: 100%;">
+            <div style="font-size: 0.85rem; color: #4ade80; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; margin-bottom: 12px;">Micro-Interventions on the Ground</div>
+            {''.join([f'<div style="margin-bottom: 10px; color: #e5e5ea; font-size: 0.9rem;">⚡ <strong>Step {i+1}:</strong> {item}</div>' for i, item in enumerate(protocol['micro_interventions'])])}
+            <hr style="border-color: #222226; margin: 16px 0;">
+            <div style="font-size: 0.85rem; color: #fbbf24; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; margin-bottom: 6px;">Facilitator Delivery Tempo & Style</div>
+            <div style="color: #a1a1aa; font-size: 0.9rem; line-height: 1.5; margin-bottom: 14px;">{protocol['delivery_tempo_guide']}</div>
+            <div style="font-size: 0.85rem; color: #4F83F5; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; margin-bottom: 6px;">Teaching Receptivity Window</div>
+            <div style="color: #a1a1aa; font-size: 0.9rem;">{protocol['window_of_teaching']}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col_t:
+        st.markdown(f"""
+        <div class="premium-card" style="height: 100%;">
+            <div style="font-size: 0.85rem; color: #a78bfa; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; margin-bottom: 12px;">Journey Phase Arc (Queue → Eyepiece → Reflection)</div>
+            
+            <div style="margin-bottom: 12px; background-color: #111113; padding: 10px; border-radius: 6px; border-left: 3px solid #4F83F5;">
+                <div style="font-size: 0.8rem; color: #4F83F5; font-weight: 600;">Phase 1: Queue / Waiting Area</div>
+                <div style="font-size: 0.88rem; color: #d4d4d8;">{trajectory['queue_phase_strategy']}</div>
+            </div>
+            
+            <div style="margin-bottom: 12px; background-color: #111113; padding: 10px; border-radius: 6px; border-left: 3px solid #4ade80;">
+                <div style="font-size: 0.8rem; color: #4ade80; font-weight: 600;">Phase 2: Direct Eyepiece Observation</div>
+                <div style="font-size: 0.88rem; color: #d4d4d8;">{trajectory['eyepiece_phase_strategy']}</div>
+            </div>
+
+            <div style="margin-bottom: 8px; background-color: #111113; padding: 10px; border-radius: 6px; border-left: 3px solid #a78bfa;">
+                <div style="font-size: 0.8rem; color: #a78bfa; font-weight: 600;">Phase 3: Post-Observation Discussion</div>
+                <div style="font-size: 0.88rem; color: #d4d4d8;">{trajectory['post_observation_strategy']}</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
 
 tab1, tab2, tab3 = st.tabs(["Forward Predictor", "Competing Explanations", "Science & Methodology"])
 
@@ -302,7 +456,6 @@ tab1, tab2, tab3 = st.tabs(["Forward Predictor", "Competing Explanations", "Scie
 # TAB 1: FORWARD PREDICTOR
 # ==========================================
 with tab1:
-    
     col1, col2 = st.columns(2)
     
     with col1:
@@ -338,7 +491,6 @@ with tab1:
         ]
     )
     
-    # Preset logic
     if preset == "Astro-Acoustic Stargazing Night (Telescope + Live Ukulele)":
         default_target = "Saturn's Rings & Deep-Sky Nebulae"
         default_music = "Live acoustic ukulele melodies, rhythmic stargazing storytelling"
@@ -404,12 +556,9 @@ with tab1:
         
         CRITICAL RULES:
         1. Treat all parameters strictly as hypothetical simulation inputs.
-        2. Never infer clinical diagnoses.
-        3. Evaluate the interaction between ASTRO-ACOUSTIC & SENSORY variables: Analyze how live acoustic music (e.g., ukulele melody) combined with telescope visuals impacts audience attention, emotional awe, and cognitive retention.
-        4. In outreach/stargazing contexts, model how multisensory inputs (starlight, acoustic melody, night air) lower cognitive load and increase retention of complex scientific concepts.
-        5. Separate Traits, States, Sensory Inputs, and Context.
-        6. Do not force every modifier to matter if irrelevant.
-        7. The 3 predicted actions MUST be meaningfully different from each other.
+        2. Evaluate ASTRO-ACOUSTIC & SENSORY variables: Analyze how live acoustic music (e.g. ukulele) combined with telescope visuals impacts attention, emotional awe, and cognitive retention.
+        3. Model Cognitive Bandwidth %, Focus Level %, Sensory Load Breakdown %, Outreach Protocols, and Phase Trajectory.
+        4. The 3 predicted actions MUST be meaningfully different from each other.
         
         TRAITS:
         - HEXACO: H:{h}, E:{e}, X:{x}, A:{a}, C:{c}, O:{o}
@@ -468,6 +617,13 @@ with tab1:
             st.info(f"**Modifier Relevance:**\n\n{result['modifier_relevance']}")
         with col_b:
             st.warning(f"**Uncertainty Level:** {result['uncertainty_level']}\n\n{result['uncertainty_reason']}")
+
+        # Render Analytics Dashboards
+        if 'cognitive_metrics' in result and 'sensory_load' in result:
+            render_cognitive_and_sensory_dashboard(result['cognitive_metrics'], result['sensory_load'])
+            
+        if 'outreach_protocol' in result and 'phase_trajectory' in result:
+            render_outreach_protocol_and_trajectory(result['outreach_protocol'], result['phase_trajectory'])
     
         st.markdown("<br><div class='section-title'>Predicted Engagement Pathways</div>", unsafe_allow_html=True)
         
@@ -490,10 +646,10 @@ with tab1:
 
         # Counterfactual Lab
         st.markdown("<br><div class='section-title'>Counterfactual Lab</div>", unsafe_allow_html=True)
-        st.markdown("<div style='color: #8e8e93; font-size: 0.95rem; margin-bottom: 20px;'>Isolate and modify a single variable to observe cascading changes. <em>(e.g., 'What if we add live ukulele music during the telescope waiting period?' or 'What if lighting is added?')</em></div>", unsafe_allow_html=True)
+        st.markdown("<div style='color: #8e8e93; font-size: 0.95rem; margin-bottom: 20px;'>Isolate and modify a single variable to observe cascading changes. <em>(e.g., 'What if we stop live music during eyepiece observation?' or 'What if lighting is dimmed?')</em></div>", unsafe_allow_html=True)
 
         with st.form("chat_form"):
-            query = st.text_input("Modify Variable", placeholder="e.g., Introduce live acoustic storytelling during viewing")
+            query = st.text_input("Modify Variable", placeholder="e.g., Pause acoustic strumming during telescope viewing")
             submit_q = st.form_submit_button("Run Counterfactual Simulation")
     
             if submit_q and query:
@@ -507,7 +663,7 @@ with tab1:
                     PREVIOUS AI PREDICTIONS: {st.session_state['last_sim']}
                     USER HYPOTHESIS: {query}
                     
-                    Identify the exact variable changed, keep others constant, and project 3 new outcomes.
+                    Identify the exact variable changed, keep others constant, and project new outcomes, cognitive metrics, sensory load, and outreach protocols.
                     """
             
                     def run_counterfactual_generation(model_name):
@@ -543,6 +699,9 @@ with tab1:
                 <div style="color: #d4d4d8; font-size: 0.95rem; line-height: 1.5;">{cf_data['comparison_summary']}</div>
             </div>
             """, unsafe_allow_html=True)
+            
+            if 'new_cognitive_metrics' in cf_data and 'new_sensory_load' in cf_data:
+                render_cognitive_and_sensory_dashboard(cf_data['new_cognitive_metrics'], cf_data['new_sensory_load'])
             
             cf_predictions = cf_data.get('new_predictions', [])
             cf_percentages = calculate_normalized_percentages(cf_predictions)
@@ -704,14 +863,20 @@ with tab3:
             3. **Practical Application in Science Engagement**
             """
             
-            with st.spinner(f"Compiling research synthesis..."):
+            with st.spinner("Compiling research synthesis..."):
                 try:
                     explanation = client.models.generate_content(model=primary_model, contents=explain_prompt)
-                    st.markdown(f'<div class="premium-card" style="margin-top: 20px; padding: 40px; line-height: 1.7; font-size: 1.05rem;">{explanation.text}</div>', unsafe_allow_html=True)
+                    with st.container():
+                        st.markdown(f'<div class="premium-card" style="margin-top: 20px; padding: 30px;">', unsafe_allow_html=True)
+                        st.markdown(explanation.text)
+                        st.markdown('</div>', unsafe_allow_html=True)
                 except Exception:
                     try:
                         explanation = client.models.generate_content(model=backup_model, contents=explain_prompt)
-                        st.markdown(f'<div class="premium-card" style="margin-top: 20px; padding: 40px; line-height: 1.7; font-size: 1.05rem;">{explanation.text}</div>', unsafe_allow_html=True)
+                        with st.container():
+                            st.markdown(f'<div class="premium-card" style="margin-top: 20px; padding: 30px;">', unsafe_allow_html=True)
+                            st.markdown(explanation.text)
+                            st.markdown('</div>', unsafe_allow_html=True)
                     except Exception:
                         st.error("Knowledge retrieval failed.")
 
