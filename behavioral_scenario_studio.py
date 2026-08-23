@@ -40,6 +40,7 @@ import html
 import uuid
 import math
 import sqlite3
+import textwrap
 from datetime import datetime, timezone
 from typing import List, Literal, Optional, Dict, Any
 
@@ -93,7 +94,7 @@ st.set_page_config(
     page_title=APP_TITLE,
     page_icon=None,
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 
@@ -390,7 +391,7 @@ hr {
 </style>
 """
 
-st.markdown(PREMIUM_CSS, unsafe_allow_html=True)
+st.markdown(textwrap.dedent(PREMIUM_CSS), unsafe_allow_html=True)
 
 
 # ============================================================
@@ -702,7 +703,6 @@ def run_gemini(
     if not text:
         raise RuntimeError("Gemini returned an empty response.")
 
-    # Strip markdown block formatting if the model leaked it despite the JSON flag
     text = text.strip()
     if text.startswith("```json"):
         text = text[7:]
@@ -788,7 +788,7 @@ Prefer:
 
 
 # ============================================================
-# 8. SESSION STATE
+# 8. SESSION STATE INIT
 # ============================================================
 
 DEFAULT_STATE = {
@@ -1376,11 +1376,11 @@ Do not convert the metrics into psychological diagnoses.
 
 
 # ============================================================
-# 16. HEADER
+# 16. HEADER & NAVIGATION
 # ============================================================
 
 st.markdown(
-    """
+    textwrap.dedent("""
     <div class="hero">
         <div class="eyebrow">Ninolades Research Platform</div>
         <div class="hero-title">
@@ -1393,222 +1393,223 @@ st.markdown(
             counterfactual exploration, and real-world impact evidence.
         </div>
     </div>
-    """,
+    """),
     unsafe_allow_html=True
 )
 
+st.markdown("---")
 
-# ============================================================
-# 17. SIDEBAR
-# ============================================================
+header_col1, header_col2, header_col3 = st.columns([1.5, 1, 2.5])
 
-with st.sidebar:
-
-    st.markdown(
-        """
-        <div style="
-            color:white;
-            font-size:1.15rem;
-            font-weight:500;
-            margin-bottom:5px;
-        ">
-            Outreach Intelligence
-        </div>
-        <div class="small-note">
-            Human-centered science engagement system
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-    st.markdown("---")
-
+with header_col1:
     model_options = {
         "Gemini 3.6 Flash": MODEL_FLASH,
         "Gemini 3.1 Pro": MODEL_PRO,
         "Gemini 3.5 Flash-Lite": MODEL_LITE,
     }
-
+    
+    mem_model_label = st.session_state.get("mem_model_label", "Gemini 3.6 Flash")
     selected_model_label = st.selectbox(
         "Reasoning engine",
         list(model_options.keys()),
-        index=0,
-        help="Choose the Gemini model used for generative analysis."
-    )
-
-    selected_model = model_options[
-        selected_model_label
-    ]
-
-    st.markdown(
-        """
-        <div class="small-note" style="margin-top:8px;">
-            Flash is the default for fast live outreach.
-            Pro is intended for deeper analysis.
-            Flash-Lite is intended for high-volume lightweight use.
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-    api_key = get_api_key()
-
-    client = create_gemini_client(
-        api_key
-    )
-
-    if client is None:
-        st.error(
-            "Gemini is not configured. Add GEMINI_API_KEY "
-            "to Streamlit secrets or the environment."
-        )
-
-    st.markdown("---")
-
-    page = st.radio(
-        "Workspace",
-        [
-            "Experience Designer",
-            "Live Copilot",
-            "Impact Observatory",
-            "Counterfactual Lab",
-            "Methodology",
-        ],
+        index=list(model_options.keys()).index(mem_model_label) if mem_model_label in model_options else 0,
+        help="Choose the Gemini model used for generative analysis.",
         label_visibility="collapsed"
     )
-
-    st.markdown("---")
+    st.session_state["mem_model_label"] = selected_model_label
+    
+    selected_model = model_options[selected_model_label]
 
     st.markdown(
-        f"""
-        <div class="small-note">
-            Version {APP_VERSION}<br>
-            AI outputs are hypotheses, not measurements.
+        textwrap.dedent("""
+        <div class="small-note" style="margin-top:8px;">
+            Flash is default for live. Pro for deep analysis. Flash-Lite for volume.
         </div>
-        """,
+        """),
         unsafe_allow_html=True
+    )
+
+with header_col2:
+    if st.button("Clean Memory", use_container_width=True):
+        st.session_state.clear()
+        st.rerun()
+
+    st.markdown(
+        textwrap.dedent(f"""
+        <div class="small-note" style="margin-top:8px; text-align:center;">
+            Version {APP_VERSION}
+        </div>
+        """),
+        unsafe_allow_html=True
+    )
+
+with header_col3:
+    page_opts = [
+        "Experience Designer",
+        "Live Copilot",
+        "Impact Observatory",
+        "Counterfactual Lab",
+        "Methodology",
+    ]
+    mem_page = st.session_state.get("mem_page", "Experience Designer")
+    page = st.radio(
+        "Workspace",
+        page_opts,
+        index=page_opts.index(mem_page) if mem_page in page_opts else 0,
+        horizontal=True,
+        label_visibility="collapsed"
+    )
+    st.session_state["mem_page"] = page
+
+st.markdown("---")
+
+api_key = get_api_key()
+
+client = create_gemini_client(api_key)
+
+if client is None:
+    st.error(
+        "Gemini is not configured. Add GEMINI_API_KEY "
+        "to Streamlit secrets or the environment."
     )
 
 
 # ============================================================
-# 18. DATABASE INSTANCE
+# 17. DATABASE INSTANCE
 # ============================================================
 
 db = db_session()
 
 
 # ============================================================
-# 19. EXPERIENCE DESIGNER
+# 18. EXPERIENCE DESIGNER
 # ============================================================
 
 if page == "Experience Designer":
 
     st.markdown(
-        '<div class="section-heading">Design an outreach experience</div>',
+        textwrap.dedent('<div class="section-heading">Design an outreach experience</div>'),
         unsafe_allow_html=True
     )
 
     left, right = st.columns(2)
 
     with left:
-
+        mem_event_name = st.session_state.get("mem_event_name", "")
         event_name = st.text_input(
             "Experience name",
+            value=mem_event_name,
             placeholder="e.g. Saturn Under the Southern Sky"
         )
+        st.session_state["mem_event_name"] = event_name
 
+        obj_opts = [
+            "Curiosity",
+            "Scientific understanding",
+            "Awe and wonder",
+            "Memory and retention",
+            "Question generation",
+            "Independent follow-through",
+            "General engagement",
+        ]
+        mem_obj = st.session_state.get("mem_objective", obj_opts[0])
         objective = st.selectbox(
             "Primary objective",
-            [
-                "Curiosity",
-                "Scientific understanding",
-                "Awe and wonder",
-                "Memory and retention",
-                "Question generation",
-                "Independent follow-through",
-                "General engagement",
-            ]
+            obj_opts,
+            index=obj_opts.index(mem_obj) if mem_obj in obj_opts else 0
         )
+        st.session_state["mem_objective"] = objective
 
+        aud_opts = [
+            "General public",
+            "Students",
+            "Families",
+            "Educators",
+            "Astronomy enthusiasts",
+            "Eco-tourists",
+            "Mixed audience",
+        ]
+        mem_aud = st.session_state.get("mem_audience", aud_opts[0])
         target_audience = st.selectbox(
             "Audience",
-            [
-                "General public",
-                "Students",
-                "Families",
-                "Educators",
-                "Astronomy enthusiasts",
-                "Eco-tourists",
-                "Mixed audience",
-            ]
+            aud_opts,
+            index=aud_opts.index(mem_aud) if mem_aud in aud_opts else 0
         )
+        st.session_state["mem_audience"] = target_audience
 
     with right:
-
+        mem_env = st.session_state.get("mem_environment", "")
         environment = st.text_input(
             "Physical environment",
+            value=mem_env,
             placeholder="Dark-sky lawn, school courtyard, museum..."
         )
+        st.session_state["mem_environment"] = environment
 
+        mem_aco = st.session_state.get("mem_acoustic", "")
         acoustic_environment = st.text_input(
             "Acoustic / musical environment",
+            value=mem_aco,
             placeholder="Silent, ambient sound, live ukulele..."
         )
+        st.session_state["mem_acoustic"] = acoustic_environment
 
+        mem_sen = st.session_state.get("mem_sensory", "")
         sensory_environment = st.text_input(
             "Relevant environmental conditions",
+            value=mem_sen,
             placeholder="Lighting, crowd density, temperature, noise..."
         )
+        st.session_state["mem_sensory"] = sensory_environment
 
+    mem_ctx = st.session_state.get("mem_context", "")
     context = st.text_area(
         "Experience description",
+        value=mem_ctx,
         placeholder=(
             "Describe what participants encounter, "
             "what the facilitator does, and the scientific content."
         ),
         height=130
     )
+    st.session_state["mem_context"] = context
 
     st.markdown(
-        '<div class="section-heading">Optional design variables</div>',
+        textwrap.dedent('<div class="section-heading">Optional design variables</div>'),
         unsafe_allow_html=True
     )
 
     design_col1, design_col2, design_col3 = st.columns(3)
 
     with design_col1:
+        pac_opts = ["Slow and contemplative", "Moderate", "Fast and energetic", "Variable"]
+        mem_pac = st.session_state.get("mem_pacing", pac_opts[0])
         pacing = st.selectbox(
             "Pacing",
-            [
-                "Slow and contemplative",
-                "Moderate",
-                "Fast and energetic",
-                "Variable"
-            ]
+            pac_opts,
+            index=pac_opts.index(mem_pac) if mem_pac in pac_opts else 0
         )
+        st.session_state["mem_pacing"] = pacing
 
     with design_col2:
+        style_opts = ["Open observation", "Facilitator-led", "Question-led", "Hands-on", "Story-driven", "Mixed"]
+        mem_sty = st.session_state.get("mem_interaction_style", style_opts[0])
         interaction_style = st.selectbox(
             "Interaction style",
-            [
-                "Open observation",
-                "Facilitator-led",
-                "Question-led",
-                "Hands-on",
-                "Story-driven",
-                "Mixed"
-            ]
+            style_opts,
+            index=style_opts.index(mem_sty) if mem_sty in style_opts else 0
         )
+        st.session_state["mem_interaction_style"] = interaction_style
 
     with design_col3:
+        aut_opts = ["High", "Moderate", "Low"]
+        mem_aut = st.session_state.get("mem_optional_choice", aut_opts[0])
         optional_choice = st.selectbox(
             "Participant autonomy",
-            [
-                "High",
-                "Moderate",
-                "Low"
-            ]
+            aut_opts,
+            index=aut_opts.index(mem_aut) if mem_aut in aut_opts else 0
         )
+        st.session_state["mem_optional_choice"] = optional_choice
 
     design_data = f"""
 Pacing: {pacing}
@@ -1675,12 +1676,12 @@ Participant autonomy: {optional_choice}
         model = st.session_state.last_forward_model
 
         st.markdown(
-            '<div class="section-heading">Engagement architecture</div>',
+            textwrap.dedent('<div class="section-heading">Engagement architecture</div>'),
             unsafe_allow_html=True
         )
 
         st.markdown(
-            f"""
+            textwrap.dedent(f"""
             <div class="premium-card">
                 <div class="eyebrow">Current model</div>
                 <div style="
@@ -1695,7 +1696,7 @@ Participant autonomy: {optional_choice}
                     engagement dynamics, not a measurement of participants.
                 </div>
             </div>
-            """,
+            """),
             unsafe_allow_html=True
         )
 
@@ -1708,7 +1709,7 @@ Participant autonomy: {optional_choice}
             with cols[idx]:
 
                 st.markdown(
-                    f"""
+                    textwrap.dedent(f"""
                     <div class="premium-card"
                          style="height:100%;">
                         <div class="eyebrow">
@@ -1730,7 +1731,7 @@ Participant autonomy: {optional_choice}
                             {clean_text(pathway["uncertainty"])}
                         </div>
                     </div>
-                    """,
+                    """),
                     unsafe_allow_html=True
                 )
 
@@ -1739,7 +1740,7 @@ Participant autonomy: {optional_choice}
         with c1:
 
             st.markdown(
-                '<div class="section-heading">Design opportunities</div>',
+                textwrap.dedent('<div class="section-heading">Design opportunities</div>'),
                 unsafe_allow_html=True
             )
 
@@ -1753,7 +1754,7 @@ Participant autonomy: {optional_choice}
         with c2:
 
             st.markdown(
-                '<div class="section-heading">Potential friction</div>',
+                textwrap.dedent('<div class="section-heading">Potential friction</div>'),
                 unsafe_allow_html=True
             )
 
@@ -1765,7 +1766,7 @@ Participant autonomy: {optional_choice}
                 )
 
         st.markdown(
-            '<div class="section-heading">What should be measured?</div>',
+            textwrap.dedent('<div class="section-heading">What should be measured?</div>'),
             unsafe_allow_html=True
         )
 
@@ -1778,13 +1779,13 @@ Participant autonomy: {optional_choice}
 
 
 # ============================================================
-# 20. LIVE COPILOT
+# 19. LIVE COPILOT
 # ============================================================
 
 elif page == "Live Copilot":
 
     st.markdown(
-        '<div class="section-heading">Live outreach copilot</div>',
+        textwrap.dedent('<div class="section-heading">Live outreach copilot</div>'),
         unsafe_allow_html=True
     )
 
@@ -1807,10 +1808,14 @@ elif page == "Live Copilot":
             for e in events
         }
 
+        event_keys = list(event_map.keys())
+        mem_live_event = st.session_state.get("mem_live_event", event_keys[0])
         chosen_name = st.selectbox(
             "Active experience",
-            list(event_map.keys())
+            event_keys,
+            index=event_keys.index(mem_live_event) if mem_live_event in event_keys else 0
         )
+        st.session_state["mem_live_event"] = chosen_name
 
         event = event_map[chosen_name]
 
@@ -1858,7 +1863,7 @@ elif page == "Live Copilot":
                 st.rerun()
 
             st.markdown(
-                f"""
+                textwrap.dedent(f"""
                 <div class="premium-card">
                     <div class="eyebrow">
                         Active interaction
@@ -1873,43 +1878,24 @@ elif page == "Live Copilot":
                         Anonymous interaction code.
                     </div>
                 </div>
-                """,
+                """),
                 unsafe_allow_html=True
             )
 
+            phase_opts = [
+                "Approach",
+                "Introduction",
+                "Waiting",
+                "Direct observation",
+                "Explanation",
+                "Question/discussion",
+                "Reflection",
+                "Exit",
+            ]
             phase = st.selectbox(
                 "Current phase",
-                [
-                    "Approach",
-                    "Introduction",
-                    "Waiting",
-                    "Direct observation",
-                    "Explanation",
-                    "Question/discussion",
-                    "Reflection",
-                    "Exit",
-                ],
-                index=[
-                    "Approach",
-                    "Introduction",
-                    "Waiting",
-                    "Direct observation",
-                    "Explanation",
-                    "Question/discussion",
-                    "Reflection",
-                    "Exit",
-                ].index(interaction.phase)
-                if interaction.phase in [
-                    "Approach",
-                    "Introduction",
-                    "Waiting",
-                    "Direct observation",
-                    "Explanation",
-                    "Question/discussion",
-                    "Reflection",
-                    "Exit",
-                ]
-                else 0
+                phase_opts,
+                index=phase_opts.index(interaction.phase) if interaction.phase in phase_opts else 0
             )
 
             if phase != interaction.phase:
@@ -1933,7 +1919,7 @@ elif page == "Live Copilot":
                 db.commit()
 
             st.markdown(
-                '<div class="section-heading">Rapid observation</div>',
+                textwrap.dedent('<div class="section-heading">Rapid observation</div>'),
                 unsafe_allow_html=True
             )
 
@@ -1998,12 +1984,15 @@ elif page == "Live Copilot":
                             "Observation recorded."
                         )
 
+            mem_cust_obs = st.session_state.get("mem_custom_obs", "")
             custom_obs = st.text_input(
                 "Custom observation",
+                value=mem_cust_obs,
                 placeholder=(
                     "Describe only what was directly observed."
                 )
             )
+            st.session_state["mem_custom_obs"] = custom_obs
 
             if st.button(
                 "Record observation"
@@ -2022,9 +2011,11 @@ elif page == "Live Copilot":
                     st.success(
                         "Observation recorded."
                     )
+                    st.session_state["mem_custom_obs"] = ""
+                    st.rerun()
 
             st.markdown(
-                '<div class="section-heading">Recent evidence</div>',
+                textwrap.dedent('<div class="section-heading">Recent evidence</div>'),
                 unsafe_allow_html=True
             )
 
@@ -2038,7 +2029,7 @@ elif page == "Live Copilot":
                 for observation in observations:
 
                     st.markdown(
-                        f"""
+                        textwrap.dedent(f"""
                         <div class="observation-row">
                             <span class="badge">
                                 {clean_text(observation.evidence_level)}
@@ -2047,7 +2038,7 @@ elif page == "Live Copilot":
                                 {clean_text(observation.detail)}
                             </span>
                         </div>
-                        """,
+                        """),
                         unsafe_allow_html=True
                     )
 
@@ -2058,7 +2049,7 @@ elif page == "Live Copilot":
                 )
 
             st.markdown(
-                '<div class="section-heading">Adaptive guidance</div>',
+                textwrap.dedent('<div class="section-heading">Adaptive guidance</div>'),
                 unsafe_allow_html=True
             )
 
@@ -2114,7 +2105,7 @@ elif page == "Live Copilot":
                 )
 
                 st.markdown(
-                    f"""
+                    textwrap.dedent(f"""
                     <div class="premium-card"
                          style="
                          border-color:
@@ -2151,7 +2142,7 @@ elif page == "Live Copilot":
                             )}
                         </div>
                     </div>
-                    """,
+                    """),
                     unsafe_allow_html=True
                 )
 
@@ -2160,7 +2151,7 @@ elif page == "Live Copilot":
                 with c1:
 
                     st.markdown(
-                        f"""
+                        textwrap.dedent(f"""
                         <div class="metric-card">
                             <div class="metric-label">
                                 Confidence
@@ -2171,7 +2162,7 @@ elif page == "Live Copilot":
                                 )}
                             </div>
                         </div>
-                        """,
+                        """),
                         unsafe_allow_html=True
                     )
 
@@ -2182,7 +2173,7 @@ elif page == "Live Copilot":
                     ]
 
                     st.markdown(
-                        f"""
+                        textwrap.dedent(f"""
                         <div class="metric-card">
                             <div class="metric-label">
                                 Model-estimated focus
@@ -2195,12 +2186,12 @@ elif page == "Live Copilot":
                                 physiological measurement.
                             </div>
                         </div>
-                        """,
+                        """),
                         unsafe_allow_html=True
                     )
 
                 st.markdown(
-                    '<div class="section-heading">Evidence used</div>',
+                    textwrap.dedent('<div class="section-heading">Evidence used</div>'),
                     unsafe_allow_html=True
                 )
 
@@ -2212,7 +2203,7 @@ elif page == "Live Copilot":
                     )
 
                 st.markdown(
-                    '<div class="section-heading">Alternative explanation</div>',
+                    textwrap.dedent('<div class="section-heading">Alternative explanation</div>'),
                     unsafe_allow_html=True
                 )
 
@@ -2223,7 +2214,7 @@ elif page == "Live Copilot":
                 )
 
                 st.markdown(
-                    '<div class="section-heading">Next observation to watch</div>',
+                    textwrap.dedent('<div class="section-heading">Next observation to watch</div>'),
                     unsafe_allow_html=True
                 )
 
@@ -2250,18 +2241,18 @@ elif page == "Live Copilot":
 
 
 # ============================================================
-# 21. IMPACT OBSERVATORY
+# 20. IMPACT OBSERVATORY
 # ============================================================
 
 elif page == "Impact Observatory":
 
     st.markdown(
-        '<div class="section-heading">Real-world impact observatory</div>',
+        textwrap.dedent('<div class="section-heading">Real-world impact observatory</div>'),
         unsafe_allow_html=True
     )
 
     st.markdown(
-        """
+        textwrap.dedent("""
         <div class="premium-card">
             <div class="eyebrow">Why this exists</div>
             <div style="
@@ -2273,7 +2264,7 @@ elif page == "Impact Observatory":
                 participant outcomes rather than generated by Gemini.
             </div>
         </div>
-        """,
+        """),
         unsafe_allow_html=True
     )
 
@@ -2296,10 +2287,14 @@ elif page == "Impact Observatory":
             for e in events
         }
 
+        event_keys = list(event_map.keys())
+        mem_obs_event = st.session_state.get("mem_obs_event", event_keys[0])
         selected_name = st.selectbox(
             "Experience",
-            list(event_map.keys())
+            event_keys,
+            index=event_keys.index(mem_obs_event) if mem_obs_event in event_keys else 0
         )
+        st.session_state["mem_obs_event"] = selected_name
 
         event = event_map[selected_name]
 
@@ -2318,7 +2313,7 @@ elif page == "Impact Observatory":
             cols = st.columns(4)
 
             cols[0].markdown(
-                f"""
+                textwrap.dedent(f"""
                 <div class="metric-card">
                     <div class="metric-label">
                         Participants
@@ -2327,12 +2322,12 @@ elif page == "Impact Observatory":
                         {metrics["participants"]}
                     </div>
                 </div>
-                """,
+                """),
                 unsafe_allow_html=True
             )
 
             cols[1].markdown(
-                f"""
+                textwrap.dedent(f"""
                 <div class="metric-card">
                     <div class="metric-label">
                         Curiosity change
@@ -2348,12 +2343,12 @@ elif page == "Impact Observatory":
                         Paired baseline → immediate
                     </div>
                 </div>
-                """,
+                """),
                 unsafe_allow_html=True
             )
 
             cols[2].markdown(
-                f"""
+                textwrap.dedent(f"""
                 <div class="metric-card">
                     <div class="metric-label">
                         Understanding change
@@ -2369,12 +2364,12 @@ elif page == "Impact Observatory":
                         Paired baseline → immediate
                     </div>
                 </div>
-                """,
+                """),
                 unsafe_allow_html=True
             )
 
             cols[3].markdown(
-                f"""
+                textwrap.dedent(f"""
                 <div class="metric-card">
                     <div class="metric-label">
                         Follow-through
@@ -2390,12 +2385,12 @@ elif page == "Impact Observatory":
                         Delayed self-report
                     </div>
                 </div>
-                """,
+                """),
                 unsafe_allow_html=True
             )
 
             st.markdown(
-                '<div class="section-heading">Outcome signals</div>',
+                textwrap.dedent('<div class="section-heading">Outcome signals</div>'),
                 unsafe_allow_html=True
             )
 
@@ -2439,7 +2434,7 @@ elif page == "Impact Observatory":
                 )
 
             st.markdown(
-                '<div class="section-heading">Delayed indicators</div>',
+                textwrap.dedent('<div class="section-heading">Delayed indicators</div>'),
                 unsafe_allow_html=True
             )
 
@@ -2460,7 +2455,7 @@ elif page == "Impact Observatory":
             )
 
             st.markdown(
-                '<div class="section-heading">AI interpretation</div>',
+                textwrap.dedent('<div class="section-heading">AI interpretation</div>'),
                 unsafe_allow_html=True
             )
 
@@ -2514,7 +2509,7 @@ elif page == "Impact Observatory":
                 )
 
                 st.markdown(
-                    f"""
+                    textwrap.dedent(f"""
                     <div class="premium-card">
                         <div class="eyebrow">
                             Interpretation
@@ -2530,7 +2525,7 @@ elif page == "Impact Observatory":
                             )}
                         </div>
                     </div>
-                    """,
+                    """),
                     unsafe_allow_html=True
                 )
 
@@ -2539,7 +2534,7 @@ elif page == "Impact Observatory":
                 with c1:
 
                     st.markdown(
-                        '<div class="section-heading">Strongest signal</div>',
+                        textwrap.dedent('<div class="section-heading">Strongest signal</div>'),
                         unsafe_allow_html=True
                     )
 
@@ -2552,7 +2547,7 @@ elif page == "Impact Observatory":
                 with c2:
 
                     st.markdown(
-                        '<div class="section-heading">Weakest signal</div>',
+                        textwrap.dedent('<div class="section-heading">Weakest signal</div>'),
                         unsafe_allow_html=True
                     )
 
@@ -2563,7 +2558,7 @@ elif page == "Impact Observatory":
                     )
 
                 st.markdown(
-                    '<div class="section-heading">Plausible mechanisms</div>',
+                    textwrap.dedent('<div class="section-heading">Plausible mechanisms</div>'),
                     unsafe_allow_html=True
                 )
 
@@ -2575,7 +2570,7 @@ elif page == "Impact Observatory":
                     )
 
                 st.markdown(
-                    '<div class="section-heading">Alternative explanations</div>',
+                    textwrap.dedent('<div class="section-heading">Alternative explanations</div>'),
                     unsafe_allow_html=True
                 )
 
@@ -2587,7 +2582,7 @@ elif page == "Impact Observatory":
                     )
 
                 st.markdown(
-                    '<div class="section-heading">Recommended next test</div>',
+                    textwrap.dedent('<div class="section-heading">Recommended next test</div>'),
                     unsafe_allow_html=True
                 )
 
@@ -2599,13 +2594,13 @@ elif page == "Impact Observatory":
 
 
 # ============================================================
-# 22. COUNTERFACTUAL LAB
+# 21. COUNTERFACTUAL LAB
 # ============================================================
 
 elif page == "Counterfactual Lab":
 
     st.markdown(
-        '<div class="section-heading">Counterfactual experiment lab</div>',
+        textwrap.dedent('<div class="section-heading">Counterfactual experiment lab</div>'),
         unsafe_allow_html=True
     )
 
@@ -2628,15 +2623,19 @@ elif page == "Counterfactual Lab":
             for e in events
         }
 
+        event_keys = list(event_map.keys())
+        mem_cf_event = st.session_state.get("mem_cf_event", event_keys[0])
         selected_name = st.selectbox(
             "Experience",
-            list(event_map.keys())
+            event_keys,
+            index=event_keys.index(mem_cf_event) if mem_cf_event in event_keys else 0
         )
+        st.session_state["mem_cf_event"] = selected_name
 
         event = event_map[selected_name]
 
         st.markdown(
-            """
+            textwrap.dedent("""
             <div class="premium-card">
                 <div class="eyebrow">
                     Counterfactual reasoning
@@ -2648,27 +2647,29 @@ elif page == "Counterfactual Lab":
                     generate testable outreach hypotheses.
                 </div>
             </div>
-            """,
+            """),
             unsafe_allow_html=True
         )
 
+        mem_cf_var = st.session_state.get("mem_cf_var", "")
         variable_change = st.text_area(
             "What would you change?",
+            value=mem_cf_var,
             placeholder=(
                 "What if the live music stopped during direct "
                 "telescope observation?"
             ),
             height=100
         )
+        st.session_state["mem_cf_var"] = variable_change
 
+        mem_cf_design = st.session_state.get("mem_cf_design", event.context or "")
         design_description = st.text_area(
             "Current design",
-            value=(
-                event.context
-                or ""
-            ),
+            value=mem_cf_design,
             height=100
         )
+        st.session_state["mem_cf_design"] = design_description
 
         if st.button(
             "Run counterfactual",
@@ -2719,7 +2720,7 @@ elif page == "Counterfactual Lab":
             cf = st.session_state.last_counterfactual
 
             st.markdown(
-                f"""
+                textwrap.dedent(f"""
                 <div class="premium-card">
                     <div class="eyebrow">
                         Changed variable
@@ -2731,7 +2732,7 @@ elif page == "Counterfactual Lab":
                         {clean_text(cf["expected_difference"])}
                     </p>
                 </div>
-                """,
+                """),
                 unsafe_allow_html=True
             )
 
@@ -2740,7 +2741,7 @@ elif page == "Counterfactual Lab":
             with c1:
 
                 st.markdown(
-                    f"""
+                    textwrap.dedent(f"""
                     <div class="premium-card">
                         <div class="eyebrow">
                             Baseline
@@ -2749,14 +2750,14 @@ elif page == "Counterfactual Lab":
                             {clean_text(cf["before_state"])}
                         </div>
                     </div>
-                    """,
+                    """),
                     unsafe_allow_html=True
                 )
 
             with c2:
 
                 st.markdown(
-                    f"""
+                    textwrap.dedent(f"""
                     <div class="premium-card">
                         <div class="eyebrow">
                             Counterfactual
@@ -2765,12 +2766,12 @@ elif page == "Counterfactual Lab":
                             {clean_text(cf["after_state"])}
                         </div>
                     </div>
-                    """,
+                    """),
                     unsafe_allow_html=True
                 )
 
             st.markdown(
-                '<div class="section-heading">Predicted effects</div>',
+                textwrap.dedent('<div class="section-heading">Predicted effects</div>'),
                 unsafe_allow_html=True
             )
 
@@ -2783,7 +2784,7 @@ elif page == "Counterfactual Lab":
                 )
 
             st.markdown(
-                '<div class="section-heading">Uncertainty</div>',
+                textwrap.dedent('<div class="section-heading">Uncertainty</div>'),
                 unsafe_allow_html=True
             )
 
@@ -2793,13 +2794,13 @@ elif page == "Counterfactual Lab":
 
 
 # ============================================================
-# 23. METHODOLOGY
+# 22. METHODOLOGY
 # ============================================================
 
 elif page == "Methodology":
 
     st.markdown(
-        '<div class="section-heading">Science and methodology</div>',
+        textwrap.dedent('<div class="section-heading">Science and methodology</div>'),
         unsafe_allow_html=True
     )
 
@@ -2930,7 +2931,7 @@ elif page == "Methodology":
     for title, body in sections:
 
         st.markdown(
-            f"""
+            textwrap.dedent(f"""
             <div class="premium-card">
                 <div class="eyebrow">
                     Method
@@ -2946,13 +2947,13 @@ elif page == "Methodology":
                     {body}
                 </div>
             </div>
-            """,
+            """),
             unsafe_allow_html=True
         )
 
 
 # ============================================================
-# 24. OPTIONAL LIGHTWEIGHT IMPACT CAPTURE
+# 23. OPTIONAL LIGHTWEIGHT IMPACT CAPTURE
 # ============================================================
 
 st.markdown("---")
@@ -2990,11 +2991,15 @@ with st.expander(
             for e in events
         }
 
+        event_keys = list(event_map.keys())
+        mem_surv_evt = st.session_state.get("mem_surv_event", event_keys[0])
         selected_event_name = st.selectbox(
             "Experience",
-            list(event_map.keys()),
+            event_keys,
+            index=event_keys.index(mem_surv_evt) if mem_surv_evt in event_keys else 0,
             key="survey_event"
         )
+        st.session_state["mem_surv_event"] = selected_event_name
 
         event = event_map[
             selected_event_name
@@ -3024,59 +3029,72 @@ with st.expander(
                 for i in interactions
             }
 
+            int_keys = list(interaction_map.keys())
+            mem_surv_part = st.session_state.get("mem_surv_participant", int_keys[0])
             selected_participant = st.selectbox(
                 "Participant interaction",
-                list(
-                    interaction_map.keys()
-                )
+                int_keys,
+                index=int_keys.index(mem_surv_part) if mem_surv_part in int_keys else 0
             )
+            st.session_state["mem_surv_participant"] = selected_participant
 
             interaction = interaction_map[
                 selected_participant
             ]
 
+            timing_opts = [
+                "BASELINE",
+                "IMMEDIATE",
+                "DELAYED_24H",
+                "DELAYED_7D",
+            ]
+            mem_surv_tim = st.session_state.get("mem_surv_timing", timing_opts[0])
             survey_timing = st.selectbox(
                 "Measurement point",
-                [
-                    "BASELINE",
-                    "IMMEDIATE",
-                    "DELAYED_24H",
-                    "DELAYED_7D",
-                ]
+                timing_opts,
+                index=timing_opts.index(mem_surv_tim) if mem_surv_tim in timing_opts else 0
             )
+            st.session_state["mem_surv_timing"] = survey_timing
 
             with st.form(
                 "outcome_capture"
             ):
-
+                
+                mem_surv_cur = st.session_state.get("mem_surv_curiosity", 5)
                 curiosity = st.slider(
                     "Curiosity",
                     1,
                     10,
-                    5
+                    mem_surv_cur
                 )
 
+                mem_surv_und = st.session_state.get("mem_surv_understanding", 50)
                 understanding = st.slider(
                     "Scientific understanding",
                     0,
                     100,
-                    50
+                    mem_surv_und
                 )
 
+                mem_surv_con = st.session_state.get("mem_surv_confidence", 5)
                 confidence = st.slider(
                     "Confidence asking/answering questions",
                     1,
                     10,
-                    5
+                    mem_surv_con
                 )
 
+                mem_surv_rec = st.session_state.get("mem_surv_recall", "")
                 recall = st.text_area(
                     "What do you remember most?",
+                    value=mem_surv_rec,
                     height=90
                 )
 
+                mem_surv_fol = st.session_state.get("mem_surv_follow", False)
                 follow_through = st.checkbox(
-                    "I voluntarily explored something further afterward"
+                    "I voluntarily explored something further afterward",
+                    value=mem_surv_fol
                 )
 
                 submitted = st.form_submit_button(
@@ -3084,6 +3102,12 @@ with st.expander(
                 )
 
                 if submitted:
+
+                    st.session_state["mem_surv_curiosity"] = curiosity
+                    st.session_state["mem_surv_understanding"] = understanding
+                    st.session_state["mem_surv_confidence"] = confidence
+                    st.session_state["mem_surv_recall"] = recall
+                    st.session_state["mem_surv_follow"] = follow_through
 
                     survey = Survey(
                         id=str(uuid.uuid4()),
@@ -3118,11 +3142,11 @@ with st.expander(
 
 
 # ============================================================
-# 25. FOOTER
+# 24. FOOTER
 # ============================================================
 
 st.markdown(
-    """
+    textwrap.dedent("""
     <div style="
         text-align:center;
         margin-top:70px;
@@ -3155,13 +3179,13 @@ st.markdown(
             observations and participant-reported outcomes.
         </div>
     </div>
-    """,
+    """),
     unsafe_allow_html=True
 )
 
 
 # ============================================================
-# 26. CLEANUP
+# 25. CLEANUP
 # ============================================================
 
 db.close()
