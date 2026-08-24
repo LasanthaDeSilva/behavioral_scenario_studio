@@ -3340,7 +3340,7 @@ with st.expander(
 
 
 # ============================================================
-# 25. FLOATING LIVE AI VOICE WIDGET (SERVER-SIDE MALE TTS ENGINE)
+# 25. FLOATING LIVE AI VOICE WIDGET (NATURAL MALE VOICE - NO DISTORTION)
 # ============================================================
 import json
 
@@ -3498,57 +3498,67 @@ body {{
 <script>
 let isListening = false;
 let recognition = null;
-let currentAudio = null;
+let currentVoices = [];
 const systemContext = {system_prompt_json};
 
-// Server-Side Male Speech Generation via Google Cloud TTS Endpoint
-async function speakTextServer(text, onComplete) {{
-    const apiKey = "{api_key}";
-    
-    // Stop any playing audio
-    if (currentAudio) {{
-        currentAudio.pause();
-        currentAudio = null;
-    }}
-
-    try {{
-        const response = await fetch(`https://texttospeech.googleapis.com/v1/text:synthesize?key=${{apiKey}}`, {{
-            method: 'POST',
-            headers: {{ 'Content-Type': 'application/json' }},
-            body: JSON.stringify({{
-                input: {{ text: text }},
-                voice: {{
-                    languageCode: 'en-US',
-                    name: 'en-US-Neural2-D', // High-fidelity American Deep Male Voice
-                    ssmlGender: 'MALE'
-                }},
-                audioConfig: {{ audioEncoding: 'MP3', pitch: -2.0, speakingRate: 1.0 }}
-            }})
-        }});
-
-        if (!response.ok) throw new Error("TTS API Error");
-
-        const data = await response.json();
-        const audioBlob = new Audio("data:audio/mp3;base64," + data.audioContent);
-        currentAudio = audioBlob;
-        
-        audioBlob.onended = () => {{ if (onComplete) onComplete(); }};
-        audioBlob.onerror = () => {{ fallbackBrowserSpeak(text, onComplete); }};
-        audioBlob.play();
-
-    }} catch (e) {{
-        // Fallback to local pitch-down if Cloud API is unreachable
-        fallbackBrowserSpeak(text, onComplete);
+function loadVoices() {{
+    if ('speechSynthesis' in window) {{
+        currentVoices = window.speechSynthesis.getVoices();
     }}
 }}
+if ('speechSynthesis' in window) {{
+    loadVoices();
+    window.speechSynthesis.onvoiceschanged = loadVoices;
+}}
 
-function fallbackBrowserSpeak(text, onComplete) {{
+// Selects natural male voice profiles without artificial pitch shifting
+function getNaturalMaleVoice() {{
+    if (!currentVoices || currentVoices.length === 0) loadVoices();
+
+    const preferredMaleNames = [
+        'google us english male',
+        'microsoft david',
+        'microsoft guy',
+        'microsoft mark',
+        'alex',
+        'daniel',
+        'fred',
+        'oliver',
+        'george'
+    ];
+
+    // Search for known high-quality male voices first
+    for (let name of preferredMaleNames) {{
+        let found = currentVoices.find(v => v.name.toLowerCase().includes(name));
+        if (found) return found;
+    }}
+
+    // Secondary search for any voice tagged with male terms
+    let maleFound = currentVoices.find(v => 
+        v.lang.startsWith('en') && 
+        (v.name.toLowerCase().includes('male') || v.name.toLowerCase().includes('man'))
+    );
+
+    return maleFound || currentVoices.find(v => v.lang.startsWith('en')) || currentVoices[0];
+}}
+
+function speakText(text, onComplete) {{
     if ('speechSynthesis' in window) {{
         window.speechSynthesis.cancel();
         const utterance = new SpeechSynthesisUtterance(text);
-        utterance.pitch = 0.5; // Forces pitch low enough to produce a male register on default voices
-        utterance.rate = 0.95;
+        const selectedVoice = getNaturalMaleVoice();
+
+        if (selectedVoice) {{
+            utterance.voice = selectedVoice;
+        }}
+
+        utterance.lang = 'en-US';
+        utterance.pitch = 1.0; // Natural native pitch (no robot distortion)
+        utterance.rate = 1.0;
+
         utterance.onend = () => {{ if (onComplete) onComplete(); }};
+        utterance.onerror = () => {{ if (onComplete) onComplete(); }};
+        
         window.speechSynthesis.speak(utterance);
     }} else if (onComplete) {{
         onComplete();
@@ -3589,7 +3599,7 @@ async function queryGeminiVoice(userInput) {{
         textDiv.innerText = reply;
         badge.innerText = "SPEAKING";
         
-        speakTextServer(reply, () => {{
+        speakText(reply, () => {{
             if (isListening) {{
                 badge.innerText = "LISTENING";
                 try {{ recognition.start(); }} catch(e){{}}
@@ -3638,7 +3648,7 @@ function toggleVoiceSession() {{
         badge.innerText = "LISTENING";
         textDiv.innerText = "Listening clearly...";
         
-        speakTextServer("Online. How can I help?", () => {{
+        speakText("Online. How can I help?", () => {{
             if (recognition) {{
                 try {{ recognition.start(); }} catch(e){{}}
             }}
@@ -3653,10 +3663,6 @@ function toggleVoiceSession() {{
         
         if (recognition) {{
             try {{ recognition.stop(); }} catch(e){{}}
-        }}
-        if (currentAudio) {{
-            currentAudio.pause();
-            currentAudio = null;
         }}
         window.speechSynthesis.cancel();
         isListening = false;
