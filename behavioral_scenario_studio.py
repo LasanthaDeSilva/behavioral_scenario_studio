@@ -3340,11 +3340,10 @@ with st.expander(
 
 
 # ============================================================
-# 25. FLOATING LIVE AI VOICE WIDGET (ACCURATE SPEECH & COMPACT TEXT)
+# 25. FLOATING LIVE AI VOICE WIDGET (STRICT MALE VOICE ENFORCEMENT)
 # ============================================================
 import json
 
-# Safely serialize the system prompt to avoid JS breaking bugs
 system_prompt_json = json.dumps(AI_SYSTEM)
 
 voice_html = f"""
@@ -3432,7 +3431,6 @@ body {{
     height: 22px;
 }}
 
-/* Compact Voice Panel */
 .voice-panel {{
     width: 290px;
     background: rgba(15, 15, 18, 0.95);
@@ -3475,7 +3473,6 @@ body {{
 .badge-off {{ background: rgba(255,255,255,0.08); color: #71717a; }}
 .badge-on {{ background: rgba(74, 222, 128, 0.15); color: #4ade80; }}
 
-/* Compact text output for speech reading */
 .voice-text {{
     font-size: 0.75rem;
     color: #d1d5db;
@@ -3524,27 +3521,43 @@ if ('speechSynthesis' in window) {{
     window.speechSynthesis.onvoiceschanged = loadVoices;
 }}
 
-// Selects deep US male speech voice tuned to mimic warm/smooth voices (Glow style)
-function getGlowMaleVoice() {{
+function getStrictMaleVoice() {{
     if (!currentVoices || currentVoices.length === 0) loadVoices();
-    return currentVoices.find(v => 
-        (v.lang.startsWith('en-US') || v.lang.startsWith('en_US')) && 
-        (v.name.toLowerCase().includes('natural') || 
-         v.name.toLowerCase().includes('david') || 
-         v.name.toLowerCase().includes('male') || 
-         v.name.toLowerCase().includes('google us english'))
-    ) || currentVoices.find(v => v.lang.startsWith('en'));
+
+    const femaleKeywords = ['samantha', 'zira', 'victoria', 'karen', 'aria', 'jenny', 'siri', 'female', 'woman', 'lucy', 'catherine', 'hazel', 'susan', 'fiona', 'veena'];
+    const maleKeywords = ['david', 'alex', 'fred', 'daniel', 'george', 'guy', 'mark', 'richard', 'james', 'thomas', 'oliver', 'male', 'man', 'google us english'];
+
+    // Filter out female voices first
+    const nonFemaleVoices = currentVoices.filter(v => 
+        !femaleKeywords.some(f => v.name.toLowerCase().includes(f))
+    );
+
+    // 1. Look for explicit male name matches in English
+    let selected = nonFemaleVoices.find(v => 
+        v.lang.startsWith('en') && maleKeywords.some(m => v.name.toLowerCase().includes(m))
+    );
+
+    // 2. Fallback to any non-female English voice
+    if (!selected) {{
+        selected = nonFemaleVoices.find(v => v.lang.startsWith('en'));
+    }}
+
+    // 3. Absolute fallback
+    return selected || currentVoices[0];
 }}
 
 function speakText(text, onComplete) {{
     if ('speechSynthesis' in window) {{
         window.speechSynthesis.cancel();
         const utterance = new SpeechSynthesisUtterance(text);
-        const voice = getGlowMaleVoice();
-        if (voice) utterance.voice = voice;
+        const maleVoice = getStrictMaleVoice();
+        
+        if (maleVoice) {{
+            utterance.voice = maleVoice;
+        }}
         
         utterance.lang = 'en-US';
-        utterance.pitch = 0.85; // Warm male pitch profile matching Glow
+        utterance.pitch = 0.75; // Lower pitch significantly to force a deeper male tone on any system voice
         utterance.rate = 1.0;
 
         utterance.onend = () => {{ if (onComplete) onComplete(); }};
@@ -3577,7 +3590,7 @@ async function queryGeminiVoice(userInput) {{
             body: JSON.stringify({{
                 system_instruction: {{
                     parts: [{{
-                        text: `You are the AI Voice Copilot. System context: ${{systemContext}}. Speak concisely (1-2 clear, accurate sentences maximum).`
+                        text: `You are the AI Voice Copilot. System context: ${{systemContext}}. Speak concisely in 1-2 sentences maximum.`
                     }}]
                 }},
                 contents: [{{ parts: [{{ text: userInput }}] }}]
@@ -3603,7 +3616,6 @@ async function queryGeminiVoice(userInput) {{
     }}
 }}
 
-// Precision Speech Recognition Setup
 if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {{
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     recognition = new SpeechRecognition();
