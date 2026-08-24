@@ -709,12 +709,8 @@ class OutcomePrediction(BaseModel):
     predicted_curiosity_shift: str
     predicted_understanding_shift: str
     predicted_engagement_rate: str
-    
-    predicted_focus_level: str
-    predicted_stress_level: str
-    predicted_awe_index: str
-    predicted_cognitive_load: str
-    
+    predicted_focus_shift: str
+    predicted_stress_response: str
     overall_outcome_narrative: str
     risk_factors: List[str] = Field(min_length=1, max_length=5)
     success_amplifiers: List[str] = Field(min_length=1, max_length=5)
@@ -1485,9 +1481,8 @@ SITUATIONAL CONTEXT: {situation_info}
 
 Based on these parameters, predict the likely outcomes and metrics for this outreach event.
 Be realistic, factoring in the environmental friction and the specific crowd dynamics.
-Provide synthetic estimates for curiosity shift, understanding shift, engagement rate, 
-predicted focus level, predicted stress level, awe index, and cognitive load.
-Make the scientific-sounding predicted effects accurate and realistic based on the context.
+Provide synthetic estimates for curiosity shift, understanding shift, engagement rate.
+ALSO, provide accurate scientific sounding predicted effects like focus shift (e.g., deep flow vs scattered cognitive focus) and stress response (e.g., high sensory load vs relaxed calm engagement).
 List clear risk factors and practical ways to amplify success on the ground.
 """
     return run_gemini(
@@ -1934,35 +1929,20 @@ elif page == "Outcome Predictor":
                     <div class="metric-value" style="font-size:1.4rem;">{clean_text(p['predicted_engagement_rate'])}</div>
                 </div>
                 """)
-
-            render_html('<div class="section-heading">Scientific-Sounding Predicted Effects</div>')
-            s1, s2, s3, s4 = st.columns(4)
-            with s1:
+                
+            m4, m5 = st.columns(2)
+            with m4:
                 render_html(f"""
-                <div class="metric-card">
-                    <div class="metric-label">Focus Level</div>
-                    <div class="metric-value" style="font-size:1.2rem; color: var(--accent);">{clean_text(p['predicted_focus_level'])}</div>
+                <div class="metric-card" style="margin-top: 15px;">
+                    <div class="metric-label">Predicted Focus Shift</div>
+                    <div class="metric-value" style="font-size:1.4rem;">{clean_text(p['predicted_focus_shift'])}</div>
                 </div>
                 """)
-            with s2:
+            with m5:
                 render_html(f"""
-                <div class="metric-card">
-                    <div class="metric-label">Stress Level</div>
-                    <div class="metric-value" style="font-size:1.2rem; color: var(--warning);">{clean_text(p['predicted_stress_level'])}</div>
-                </div>
-                """)
-            with s3:
-                render_html(f"""
-                <div class="metric-card">
-                    <div class="metric-label">Awe Index</div>
-                    <div class="metric-value" style="font-size:1.2rem; color: var(--success);">{clean_text(p['predicted_awe_index'])}</div>
-                </div>
-                """)
-            with s4:
-                render_html(f"""
-                <div class="metric-card">
-                    <div class="metric-label">Cognitive Load</div>
-                    <div class="metric-value" style="font-size:1.2rem; color: var(--danger);">{clean_text(p['predicted_cognitive_load'])}</div>
+                <div class="metric-card" style="margin-top: 15px;">
+                    <div class="metric-label">Predicted Stress / Load</div>
+                    <div class="metric-value" style="font-size:1.4rem;">{clean_text(p['predicted_stress_response'])}</div>
                 </div>
                 """)
 
@@ -2182,33 +2162,6 @@ elif page == "Live Copilot":
             if preference != (interaction.stated_preference or ""):
                 interaction.stated_preference = preference
                 db.commit()
-                
-            render_html('<div class="section-heading">Voice Copilot: Listen & Instruct</div>')
-            render_html('<div class="small-note" style="margin-bottom:15px;">Dictate a custom observation accurately via voice. The AI copilot will also speak out new recommendations.</div>')
-            
-            audio_val = st.audio_input("Dictate an observation")
-            if audio_val is not None:
-                current_audio_hash = hash(audio_val.getvalue())
-                if st.session_state.get("last_audio_hash") != current_audio_hash:
-                    st.session_state["last_audio_hash"] = current_audio_hash
-                    
-                    with st.spinner("Transcribing voice observation..."):
-                        try:
-                            prompt_text = "Transcribe the following spoken observation accurately. Return ONLY the transcription text, nothing else."
-                            response = client.models.generate_content(
-                                model=MODEL_FLASH,
-                                contents=[
-                                    types.Part.from_bytes(data=audio_val.getvalue(), mime_type="audio/wav"),
-                                    prompt_text
-                                ]
-                            )
-                            transcription = response.text.strip()
-                            if transcription:
-                                log_observation(db, interaction.id, "Voice Custom", transcription, "OBSERVED")
-                                st.toast(f"Voice observation logged: {transcription}")
-                                st.rerun()
-                        except Exception as e:
-                            st.error(f"Voice transcription failed: {e}")
 
             render_html('<div class="section-heading">Quick Observations</div>')
 
@@ -2326,25 +2279,6 @@ elif page == "Live Copilot":
                 recommendation = (
                     st.session_state.last_recommendation
                 )
-                
-                if "spoken_recommendation" not in st.session_state:
-                    st.session_state.spoken_recommendation = ""
-                
-                rec_action = recommendation["recommended_action"]
-                if st.session_state.spoken_recommendation != rec_action:
-                    st.session_state.spoken_recommendation = rec_action
-                    safe_speech = rec_action.replace('"', '\\"').replace('\n', ' ')
-                    js_code = f"""
-                    <script>
-                        const synth = window.speechSynthesis;
-                        const utterThis = new SpeechSynthesisUtterance("{safe_speech}");
-                        utterThis.lang = 'en-US';
-                        utterThis.rate = 0.95;
-                        utterThis.pitch = 1.0;
-                        synth.speak(utterThis);
-                    </script>
-                    """
-                    components.html(js_code, height=0)
 
                 render_html(f"""
                 <div class="premium-card"
@@ -2428,6 +2362,73 @@ elif page == "Live Copilot":
                 )
 
             st.markdown("---")
+            render_html('<div class="section-heading">🎙️ Live Voice Assistant</div>')
+            render_html('<div class="small-note" style="margin-bottom:15px;">Use your microphone to speak with the Copilot. Ask for guidance or log observations verbally. The AI will listen and instruct you with high-quality voice playback.</div>')
+            
+            voice_audio = st.audio_input("Record Voice for Copilot", key=f"voice_input_{interaction.id}")
+            if voice_audio:
+                if st.button("Send Voice to Copilot", type="primary", use_container_width=True):
+                    if client is None:
+                        st.error("Gemini is unavailable.")
+                    else:
+                        try:
+                            with st.spinner("Analyzing and preparing verbal instruction..."):
+                                audio_part = types.Part.from_bytes(data=voice_audio.getvalue(), mime_type="audio/wav")
+                                voice_prompt = f"""
+                                You are an AI voice copilot assisting a facilitator during a live outreach event.
+                                Event: {event.name}
+                                Objective: {event.objective}
+                                Current Phase: {interaction.phase}
+                                
+                                Listen to the facilitator's voice input. 
+                                Provide a direct, scientifically accurate, and encouraging verbal instruction or analysis.
+                                Speak normally. Keep it under 3 short sentences so it translates well to Text-To-Speech.
+                                Do NOT use any Markdown formatting (like **, #). Just raw text that is easy to speak aloud.
+                                """
+                                
+                                voice_response = client.models.generate_content(
+                                    model=selected_model,
+                                    contents=[voice_prompt, audio_part],
+                                    config=types.GenerateContentConfig(
+                                        system_instruction=AI_SYSTEM,
+                                        temperature=0.3,
+                                    )
+                                )
+                                
+                                st.session_state[f"last_voice_reply_{interaction.id}"] = voice_response.text.strip()
+                        except Exception as exc:
+                            st.error(f"Voice processing failed: {exc}")
+
+            last_voice_key = f"last_voice_reply_{interaction.id}"
+            if st.session_state.get(last_voice_key):
+                voice_reply = st.session_state[last_voice_key]
+                
+                render_html(f"""
+                <div class="premium-card" style="border-color: var(--accent); background: linear-gradient(145deg, rgba(91,140,255,.09), rgba(91,140,255,.025)); margin-top: 15px;">
+                    <div class="eyebrow">Voice Copilot Instruction</div>
+                    <div style="font-size: 1.15rem; color: #fff; line-height: 1.6;">
+                        {clean_text(voice_reply)}
+                    </div>
+                </div>
+                """)
+                
+                safe_voice_reply = voice_reply.replace('"', '\\"').replace('\n', ' ').replace('\r', '')
+                tts_js = f"""
+                <script>
+                    if (!window.sessionStorage.getItem("spoken_{hash(voice_reply)}")) {{
+                        var utterance = new SpeechSynthesisUtterance("{safe_voice_reply}");
+                        var voices = window.speechSynthesis.getVoices();
+                        utterance.voice = voices.find(v => v.name.includes('Google UK English') || v.lang.startsWith('en')) || null;
+                        utterance.rate = 1.0;
+                        utterance.pitch = 1.0;
+                        window.speechSynthesis.speak(utterance);
+                        window.sessionStorage.setItem("spoken_{hash(voice_reply)}", "true");
+                    }}
+                </script>
+                """
+                components.html(tts_js, height=0)
+
+            st.markdown("---")
 
             if st.button(
                 "End interaction and start next participant",
@@ -2439,6 +2440,8 @@ elif page == "Live Copilot":
 
                 st.session_state.active_interaction_id = None
                 st.session_state.last_recommendation = None
+                if last_voice_key in st.session_state:
+                    del st.session_state[last_voice_key]
 
                 st.rerun()
 
