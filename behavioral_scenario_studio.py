@@ -3691,7 +3691,7 @@ if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {{
     recognition.interimResults = false;
     recognition.lang = 'en-US';
 
-    recognition.onresult = function(event) {
+    recognition.onresult = function(event) {{
         if (event.results && event.results[0]) {{
             const transcript = event.results[0][0].transcript;
             document.getElementById('voiceText').innerText = "You: " + transcript;
