@@ -3340,11 +3340,12 @@ with st.expander(
 
 
 # ============================================================
-# 25. FLOATING LIVE AI VOICE WIDGET (INTERACTIVE GEMINI AI & AMERICAN MALE VOICE)
+# 25. FLOATING LIVE AI VOICE WIDGET (ACCURATE SPEECH & COMPACT TEXT)
 # ============================================================
+import json
 
-# Flatten the core AI system instructions into a JS-safe string
-system_prompt_js = AI_SYSTEM.replace('\n', ' ').replace('"', '\\"').replace("'", "\\'")
+# Safely serialize the system prompt to avoid JS breaking bugs
+system_prompt_json = json.dumps(AI_SYSTEM)
 
 voice_html = f"""
 <!DOCTYPE html>
@@ -3359,7 +3360,7 @@ voice_html = f"""
 body {{
     background: transparent;
     overflow: hidden;
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     width: 100%;
     height: 100%;
     display: flex;
@@ -3374,130 +3375,74 @@ body {{
     display: flex;
     flex-direction: column;
     align-items: flex-end;
-    gap: 12px;
+    gap: 10px;
 }}
 
 .voice-fab {{
-    width: 58px;
-    height: 58px;
+    width: 52px;
+    height: 52px;
     border-radius: 50%;
     display: flex;
     align-items: center;
     justify-content: center;
     cursor: pointer;
-    transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    transition: all 0.25s ease;
     position: relative;
     user-select: none;
 }}
 
-/* OFF STATE: Ultra-clean dark glassmorphism */
 .voice-fab.off {{
-    background: rgba(22, 22, 26, 0.85);
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    background: rgba(18, 18, 22, 0.90);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
 }}
 .voice-fab.off:hover {{
-    background: rgba(35, 35, 42, 0.95);
-    border-color: rgba(255, 255, 255, 0.25);
-    transform: scale(1.06);
+    background: rgba(30, 30, 38, 0.95);
+    transform: scale(1.05);
 }}
 .voice-fab.off svg {{
     fill: #a1a1aa;
-    transition: fill 0.3s ease;
-}}
-.voice-fab.off:hover svg {{
-    fill: #ffffff;
 }}
 
-/* Status Indicator Dot on Icon */
 .status-dot {{
     position: absolute;
     top: 2px;
     right: 2px;
-    width: 12px;
-    height: 12px;
+    width: 10px;
+    height: 10px;
     border-radius: 50%;
     border: 2px solid #0b0b0d;
-    transition: background-color 0.3s ease;
 }}
-.voice-fab.off .status-dot {{
-    background-color: #71717a;
-}}
-.voice-fab.on .status-dot {{
-    background-color: #4ade80;
-    box-shadow: 0 0 8px #4ade80;
-}}
+.voice-fab.off .status-dot {{ background-color: #71717a; }}
+.voice-fab.on .status-dot {{ background-color: #4ade80; box-shadow: 0 0 6px #4ade80; }}
 
-/* ON STATE: High-end glowing white / vivid accent ring */
 .voice-fab.on {{
     background: #ffffff;
     border: 1px solid #ffffff;
-    box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.6), 0 10px 30px rgba(91, 140, 255, 0.35);
-    animation: livePulse 2s cubic-bezier(0.16, 1, 0.3, 1) infinite;
-    transform: scale(1.06);
+    box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.2), 0 8px 24px rgba(91, 140, 255, 0.4);
+    transform: scale(1.05);
 }}
 .voice-fab.on svg {{
-    fill: #0b0b0d;
-}}
-
-@keyframes livePulse {{
-    0% {{
-        box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.5), 0 10px 30px rgba(91, 140, 255, 0.35);
-    }}
-    70% {{
-        box-shadow: 0 0 0 16px rgba(255, 255, 255, 0), 0 10px 30px rgba(91, 140, 255, 0.35);
-    }}
-    100% {{
-        box-shadow: 0 0 0 0 rgba(255, 255, 255, 0), 0 10px 30px rgba(91, 140, 255, 0.35);
-    }}
+    fill: #09090b;
 }}
 
 .voice-fab svg {{
-    width: 24px;
-    height: 24px;
+    width: 22px;
+    height: 22px;
 }}
 
-/* Sound Wave Animation (When Active) */
-.wave-bars {{
-    display: none;
-    align-items: center;
-    gap: 2px;
-    height: 14px;
-    margin-top: 4px;
-}}
-.voice-fab.on .wave-bars {{
-    display: flex;
-}}
-.bar {{
-    width: 3px;
-    background: #0b0b0d;
-    border-radius: 2px;
-    animation: wave 1.2s ease-in-out infinite;
-}}
-.bar:nth-child(1) {{ height: 6px; animation-delay: 0.1s; }}
-.bar:nth-child(2) {{ height: 12px; animation-delay: 0.25s; }}
-.bar:nth-child(3) {{ height: 8px; animation-delay: 0.4s; }}
-
-@keyframes wave {{
-    0%, 100% {{ transform: scaleY(0.4); }}
-    50% {{ transform: scaleY(1.1); }}
-}}
-
-/* Floating Voice Panel */
+/* Compact Voice Panel */
 .voice-panel {{
-    width: 330px;
-    background: rgba(17, 17, 20, 0.94);
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
+    width: 290px;
+    background: rgba(15, 15, 18, 0.95);
+    backdrop-filter: blur(16px);
     border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 14px;
-    padding: 16px 18px;
-    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
+    border-radius: 12px;
+    padding: 12px 14px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
     display: none;
-    color: #f5f5f7;
-    transition: opacity 0.3s ease, transform 0.3s ease;
+    color: #f4f4f5;
 }}
 .voice-panel.visible {{
     display: block;
@@ -3507,44 +3452,39 @@ body {{
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 8px;
+    margin-bottom: 6px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
 }}
 
 .voice-status-title {{
-    font-size: 0.72rem;
+    font-size: 0.65rem;
     text-transform: uppercase;
-    letter-spacing: 0.09em;
-    font-weight: 600;
-    color: #a1a1aa;
+    letter-spacing: 0.08em;
+    font-weight: 700;
+    color: #94a3b8;
 }}
 
 .badge-state {{
-    font-size: 0.68rem;
-    padding: 2px 7px;
+    font-size: 0.60rem;
+    padding: 2px 6px;
     border-radius: 4px;
-    font-weight: 600;
+    font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
 }}
-.badge-off {{
-    background: rgba(255,255,255,0.06);
-    color: #71717a;
-    border: 1px solid rgba(255,255,255,0.08);
-}}
-.badge-on {{
-    background: rgba(74, 222, 128, 0.12);
-    color: #4ade80;
-    border: 1px solid rgba(74, 222, 128, 0.25);
-}}
+.badge-off {{ background: rgba(255,255,255,0.08); color: #71717a; }}
+.badge-on {{ background: rgba(74, 222, 128, 0.15); color: #4ade80; }}
 
+/* Compact text output for speech reading */
 .voice-text {{
-    font-size: 0.86rem;
-    color: #d4d4d8;
-    min-height: 52px;
-    max-height: 120px;
+    font-size: 0.75rem;
+    color: #d1d5db;
+    min-height: 42px;
+    max-height: 95px;
     overflow-y: auto;
-    line-height: 1.5;
+    line-height: 1.4;
     word-break: break-word;
+    font-weight: 400;
 }}
 </style>
 </head>
@@ -3553,10 +3493,10 @@ body {{
 <div class="voice-container">
     <div id="voicePanel" class="voice-panel">
         <div class="panel-header">
-            <span class="voice-status-title">Live AI Voice Copilot</span>
+            <span class="voice-status-title">AI Voice Copilot</span>
             <span id="voiceBadge" class="badge-state badge-off">OFF</span>
         </div>
-        <div id="voiceText" class="voice-text">Tap the floating microphone button to activate real-time AI voice copilot...</div>
+        <div id="voiceText" class="voice-text">Tap the mic to start speaking...</div>
     </div>
 
     <div id="voiceFab" class="voice-fab off" onclick="toggleVoiceSession()">
@@ -3565,11 +3505,6 @@ body {{
             <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
             <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
         </svg>
-        <div class="wave-bars">
-            <div class="bar"></div>
-            <div class="bar"></div>
-            <div class="bar"></div>
-        </div>
     </div>
 </div>
 
@@ -3577,56 +3512,43 @@ body {{
 let isListening = false;
 let recognition = null;
 let currentVoices = [];
+const systemContext = {system_prompt_json};
 
 function loadVoices() {{
     if ('speechSynthesis' in window) {{
         currentVoices = window.speechSynthesis.getVoices();
     }}
 }}
-
 if ('speechSynthesis' in window) {{
     loadVoices();
     window.speechSynthesis.onvoiceschanged = loadVoices;
 }}
 
-function getAmericanMaleVoice() {{
-    if (!currentVoices || currentVoices.length === 0) {{
-        loadVoices();
-    }}
-    // Strict priority for deep American Male Voices
-    let maleVoice = currentVoices.find(v => 
-        (v.lang === 'en-US' || v.lang === 'en_US') && 
-        (v.name.toLowerCase().includes('david') || 
-         v.name.toLowerCase().includes('mark') || 
-         v.name.toLowerCase().includes('george') || 
-         v.name.toLowerCase().includes('guy') || 
+// Selects deep US male speech voice tuned to mimic warm/smooth voices (Glow style)
+function getGlowMaleVoice() {{
+    if (!currentVoices || currentVoices.length === 0) loadVoices();
+    return currentVoices.find(v => 
+        (v.lang.startsWith('en-US') || v.lang.startsWith('en_US')) && 
+        (v.name.toLowerCase().includes('natural') || 
+         v.name.toLowerCase().includes('david') || 
          v.name.toLowerCase().includes('male') || 
-         v.name.toLowerCase().includes('natural') || 
          v.name.toLowerCase().includes('google us english'))
-    );
-    
-    if (!maleVoice) {{
-        maleVoice = currentVoices.find(v => v.lang === 'en-US' || v.lang === 'en_US');
-    }}
-    return maleVoice;
+    ) || currentVoices.find(v => v.lang.startsWith('en'));
 }}
 
 function speakText(text, onComplete) {{
     if ('speechSynthesis' in window) {{
         window.speechSynthesis.cancel();
         const utterance = new SpeechSynthesisUtterance(text);
+        const voice = getGlowMaleVoice();
+        if (voice) utterance.voice = voice;
         
-        const maleVoice = getAmericanMaleVoice();
-        if (maleVoice) {{
-            utterance.voice = maleVoice;
-        }}
         utterance.lang = 'en-US';
-        utterance.pitch = 0.90; // Tuned down slightly for a more natural male cadence
+        utterance.pitch = 0.85; // Warm male pitch profile matching Glow
         utterance.rate = 1.0;
 
-        utterance.onend = function() {{
-            if (onComplete) onComplete();
-        }};
+        utterance.onend = () => {{ if (onComplete) onComplete(); }};
+        utterance.onerror = () => {{ if (onComplete) onComplete(); }};
         
         window.speechSynthesis.speak(utterance);
     }} else if (onComplete) {{
@@ -3639,52 +3561,31 @@ async function queryGeminiVoice(userInput) {{
     const selectedModel = "{selected_model}";
     const textDiv = document.getElementById('voiceText');
     const badge = document.getElementById('voiceBadge');
-    
-    // Inject the Python backend's AI system instructions directly into Javascript
-    const systemContext = "{system_prompt_js}";
 
     if (!apiKey) {{
-        const msg = "Gemini API key is not configured. I heard: " + userInput;
-        textDiv.innerText = msg;
-        speakText(msg);
+        textDiv.innerText = "API key missing.";
         return;
     }}
 
-    textDiv.innerText = "Analyzing voice prompt...";
+    textDiv.innerText = "Thinking...";
     badge.innerText = "THINKING";
 
     try {{
-        // Properly formatted URL without the markdown artifacts
         const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${{selectedModel}}:generateContent?key=${{apiKey}}`, {{
             method: 'POST',
             headers: {{ 'Content-Type': 'application/json' }},
             body: JSON.stringify({{
                 system_instruction: {{
                     parts: [{{
-                        text: `You are the live interactive voice copilot for the Ninolades Outreach Intelligence Lab. 
-                        You have full knowledge of the system's logic, science outreach design, counterfactual lab, impact measurements, and methodology.
-                        Here are your core principles: ${{systemContext}}
-                        Keep your spoken answers highly intelligent, grounded in data, and natural. Do not speak like a robot. Limit responses to 1-3 conversational sentences max.`
+                        text: `You are the AI Voice Copilot. System context: ${{systemContext}}. Speak concisely (1-2 clear, accurate sentences maximum).`
                     }}]
                 }},
-                contents: [{{
-                    parts: [{{ text: userInput }}]
-                }}]
+                contents: [{{ parts: [{{ text: userInput }}] }}]
             }})
         }});
-        
-        if (!response.ok) {{
-            throw new Error(`API error: ${{response.status}}`);
-        }}
 
         const data = await response.json();
-        let reply = "";
-        
-        if (data.candidates && data.candidates[0] && data.candidates[0].content) {{
-            reply = data.candidates[0].content.parts[0].text.trim();
-        }} else {{
-            reply = "I received your observation, but could not generate a response.";
-        }}
+        const reply = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "I couldn't process that clearly. Please try again.";
 
         textDiv.innerText = reply;
         badge.innerText = "SPEAKING";
@@ -3697,37 +3598,30 @@ async function queryGeminiVoice(userInput) {{
         }});
 
     }} catch (err) {{
-        console.error("Voice Fetch Error: ", err);
-        const errText = "I encountered a connection issue processing that prompt. Make sure the API key and network are solid.";
-        textDiv.innerText = errText;
-        speakText(errText);
+        textDiv.innerText = "Connection error. Retrying...";
+        badge.innerText = "ERROR";
     }}
 }}
 
+// Precision Speech Recognition Setup
 if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {{
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     recognition = new SpeechRecognition();
     recognition.continuous = false;
     recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
     recognition.lang = 'en-US';
 
     recognition.onresult = function(event) {{
         if (event.results && event.results[0]) {{
             const transcript = event.results[0][0].transcript;
-            document.getElementById('voiceText').innerText = "You: " + transcript;
+            document.getElementById('voiceText').innerText = 'You: "' + transcript + '"';
             queryGeminiVoice(transcript);
         }}
     }};
 
-    recognition.onerror = function(event) {{
+    recognition.onerror = function() {{
         if (isListening) {{
-            try {{ recognition.start(); }} catch(e){{}}
-        }}
-    }};
-
-    recognition.onend = function() {{
-        // Auto restart if listening and not speaking
-        if (isListening && !window.speechSynthesis.speaking) {{
             try {{ recognition.start(); }} catch(e){{}}
         }}
     }};
@@ -3741,13 +3635,12 @@ function toggleVoiceSession() {{
 
     if (!isListening) {{
         panel.classList.add('visible');
-        fab.classList.remove('off');
-        fab.classList.add('on');
+        fab.classList.replace('off', 'on');
         badge.className = "badge-state badge-on";
         badge.innerText = "LISTENING";
-        textDiv.innerText = "Live AI Voice Copilot active. Speak now...";
+        textDiv.innerText = "Listening clearly...";
         
-        speakText("System online. I'm fully aware of the code and logic. What's on your mind?", () => {{
+        speakText("Online. How can I help?", () => {{
             if (recognition) {{
                 try {{ recognition.start(); }} catch(e){{}}
             }}
@@ -3755,18 +3648,17 @@ function toggleVoiceSession() {{
 
         isListening = true;
     }} else {{
-        fab.classList.remove('on');
-        fab.classList.add('off');
+        fab.classList.replace('on', 'off');
         badge.className = "badge-state badge-off";
         badge.innerText = "OFF";
-        textDiv.innerText = "Voice assistant paused.";
+        textDiv.innerText = "Muted.";
         
         if (recognition) {{
             try {{ recognition.stop(); }} catch(e){{}}
         }}
-        speakText("Voice assistant muted.");
+        window.speechSynthesis.cancel();
         isListening = false;
-        setTimeout(() => {{ panel.classList.remove('visible'); }}, 2500);
+        setTimeout(() => {{ panel.classList.remove('visible'); }}, 1500);
     }}
 }}
 </script>
@@ -3774,7 +3666,7 @@ function toggleVoiceSession() {{
 </html>
 """
 
-components.html(voice_html, height=310, width=360)
+components.html(voice_html, height=220, width=320)
 
 
 # ============================================================
