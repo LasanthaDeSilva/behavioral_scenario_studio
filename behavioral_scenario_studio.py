@@ -3343,6 +3343,9 @@ with st.expander(
 # 25. FLOATING LIVE AI VOICE WIDGET (INTERACTIVE GEMINI AI & AMERICAN MALE VOICE)
 # ============================================================
 
+# Flatten the core AI system instructions into a JS-safe string
+system_prompt_js = AI_SYSTEM.replace('\n', ' ').replace('"', '\\"').replace("'", "\\'")
+
 voice_html = f"""
 <!DOCTYPE html>
 <html>
@@ -3590,7 +3593,7 @@ function getAmericanMaleVoice() {{
     if (!currentVoices || currentVoices.length === 0) {{
         loadVoices();
     }}
-    // Strict priority for American Male Voices
+    // Strict priority for deep American Male Voices
     let maleVoice = currentVoices.find(v => 
         (v.lang === 'en-US' || v.lang === 'en_US') && 
         (v.name.toLowerCase().includes('david') || 
@@ -3618,7 +3621,7 @@ function speakText(text, onComplete) {{
             utterance.voice = maleVoice;
         }}
         utterance.lang = 'en-US';
-        utterance.pitch = 0.92; // Natural deep American male pitch
+        utterance.pitch = 0.90; // Tuned down slightly for a more natural male cadence
         utterance.rate = 1.0;
 
         utterance.onend = function() {{
@@ -3636,6 +3639,9 @@ async function queryGeminiVoice(userInput) {{
     const selectedModel = "{selected_model}";
     const textDiv = document.getElementById('voiceText');
     const badge = document.getElementById('voiceBadge');
+    
+    // Inject the Python backend's AI system instructions directly into Javascript
+    const systemContext = "{system_prompt_js}";
 
     if (!apiKey) {{
         const msg = "Gemini API key is not configured. I heard: " + userInput;
@@ -3648,18 +3654,32 @@ async function queryGeminiVoice(userInput) {{
     badge.innerText = "THINKING";
 
     try {{
-        const response = await fetch(`[https://generativelanguage.googleapis.com/v1beta/models/$](https://generativelanguage.googleapis.com/v1beta/models/$){{selectedModel}}:generateContent?key=${{apiKey}}`, {{
+        // Properly formatted URL without the markdown artifacts
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${{selectedModel}}:generateContent?key=${{apiKey}}`, {{
             method: 'POST',
             headers: {{ 'Content-Type': 'application/json' }},
             body: JSON.stringify({{
+                system_instruction: {{
+                    parts: [{{
+                        text: `You are the live interactive voice copilot for the Ninolades Outreach Intelligence Lab. 
+                        You have full knowledge of the system's logic, science outreach design, counterfactual lab, impact measurements, and methodology.
+                        Here are your core principles: ${{systemContext}}
+                        Keep your spoken answers highly intelligent, grounded in data, and natural. Do not speak like a robot. Limit responses to 1-3 conversational sentences max.`
+                    }}]
+                }},
                 contents: [{{
-                    parts: [{{ text: "You are a live, ultra-concise science outreach voice copilot. Provide a direct, intelligent 1-to-2 sentence answer designed for speech to this prompt: " + userInput }}]
+                    parts: [{{ text: userInput }}]
                 }}]
             }})
         }});
+        
+        if (!response.ok) {{
+            throw new Error(`API error: ${{response.status}}`);
+        }}
 
         const data = await response.json();
         let reply = "";
+        
         if (data.candidates && data.candidates[0] && data.candidates[0].content) {{
             reply = data.candidates[0].content.parts[0].text.trim();
         }} else {{
@@ -3677,8 +3697,8 @@ async function queryGeminiVoice(userInput) {{
         }});
 
     }} catch (err) {{
-        console.error(err);
-        const errText = "I encountered a connection issue processing that prompt.";
+        console.error("Voice Fetch Error: ", err);
+        const errText = "I encountered a connection issue processing that prompt. Make sure the API key and network are solid.";
         textDiv.innerText = errText;
         speakText(errText);
     }}
@@ -3725,9 +3745,9 @@ function toggleVoiceSession() {{
         fab.classList.add('on');
         badge.className = "badge-state badge-on";
         badge.innerText = "LISTENING";
-        textDiv.innerText = "Live American Male AI Voice Copilot active. Speak now...";
+        textDiv.innerText = "Live AI Voice Copilot active. Speak now...";
         
-        speakText("Live outreach voice model connected. How can I assist your session?", () => {{
+        speakText("System online. I'm fully aware of the code and logic. What's on your mind?", () => {{
             if (recognition) {{
                 try {{ recognition.start(); }} catch(e){{}}
             }}
