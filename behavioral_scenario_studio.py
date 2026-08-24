@@ -3340,7 +3340,7 @@ with st.expander(
 
 
 # ============================================================
-# 25. FLOATING LIVE AI VOICE WIDGET (STRICT MALE VOICE ENFORCEMENT)
+# 25. FLOATING LIVE AI VOICE WIDGET (SERVER-SIDE MALE TTS ENGINE)
 # ============================================================
 import json
 
@@ -3400,9 +3400,7 @@ body {{
     background: rgba(30, 30, 38, 0.95);
     transform: scale(1.05);
 }}
-.voice-fab.off svg {{
-    fill: #a1a1aa;
-}}
+.voice-fab.off svg {{ fill: #a1a1aa; }}
 
 .status-dot {{
     position: absolute;
@@ -3422,14 +3420,8 @@ body {{
     box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.2), 0 8px 24px rgba(91, 140, 255, 0.4);
     transform: scale(1.05);
 }}
-.voice-fab.on svg {{
-    fill: #09090b;
-}}
-
-.voice-fab svg {{
-    width: 22px;
-    height: 22px;
-}}
+.voice-fab.on svg {{ fill: #09090b; }}
+.voice-fab svg {{ width: 22px; height: 22px; }}
 
 .voice-panel {{
     width: 290px;
@@ -3442,9 +3434,7 @@ body {{
     display: none;
     color: #f4f4f5;
 }}
-.voice-panel.visible {{
-    display: block;
-}}
+.voice-panel.visible {{ display: block; }}
 
 .panel-header {{
     display: flex;
@@ -3508,61 +3498,57 @@ body {{
 <script>
 let isListening = false;
 let recognition = null;
-let currentVoices = [];
+let currentAudio = null;
 const systemContext = {system_prompt_json};
 
-function loadVoices() {{
-    if ('speechSynthesis' in window) {{
-        currentVoices = window.speechSynthesis.getVoices();
-    }}
-}}
-if ('speechSynthesis' in window) {{
-    loadVoices();
-    window.speechSynthesis.onvoiceschanged = loadVoices;
-}}
-
-function getStrictMaleVoice() {{
-    if (!currentVoices || currentVoices.length === 0) loadVoices();
-
-    const femaleKeywords = ['samantha', 'zira', 'victoria', 'karen', 'aria', 'jenny', 'siri', 'female', 'woman', 'lucy', 'catherine', 'hazel', 'susan', 'fiona', 'veena'];
-    const maleKeywords = ['david', 'alex', 'fred', 'daniel', 'george', 'guy', 'mark', 'richard', 'james', 'thomas', 'oliver', 'male', 'man', 'google us english'];
-
-    // Filter out female voices first
-    const nonFemaleVoices = currentVoices.filter(v => 
-        !femaleKeywords.some(f => v.name.toLowerCase().includes(f))
-    );
-
-    // 1. Look for explicit male name matches in English
-    let selected = nonFemaleVoices.find(v => 
-        v.lang.startsWith('en') && maleKeywords.some(m => v.name.toLowerCase().includes(m))
-    );
-
-    // 2. Fallback to any non-female English voice
-    if (!selected) {{
-        selected = nonFemaleVoices.find(v => v.lang.startsWith('en'));
+// Server-Side Male Speech Generation via Google Cloud TTS Endpoint
+async function speakTextServer(text, onComplete) {{
+    const apiKey = "{api_key}";
+    
+    // Stop any playing audio
+    if (currentAudio) {{
+        currentAudio.pause();
+        currentAudio = null;
     }}
 
-    // 3. Absolute fallback
-    return selected || currentVoices[0];
+    try {{
+        const response = await fetch(`https://texttospeech.googleapis.com/v1/text:synthesize?key=${{apiKey}}`, {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }},
+            body: JSON.stringify({{
+                input: {{ text: text }},
+                voice: {{
+                    languageCode: 'en-US',
+                    name: 'en-US-Neural2-D', // High-fidelity American Deep Male Voice
+                    ssmlGender: 'MALE'
+                }},
+                audioConfig: {{ audioEncoding: 'MP3', pitch: -2.0, speakingRate: 1.0 }}
+            }})
+        }});
+
+        if (!response.ok) throw new Error("TTS API Error");
+
+        const data = await response.json();
+        const audioBlob = new Audio("data:audio/mp3;base64," + data.audioContent);
+        currentAudio = audioBlob;
+        
+        audioBlob.onended = () => {{ if (onComplete) onComplete(); }};
+        audioBlob.onerror = () => {{ fallbackBrowserSpeak(text, onComplete); }};
+        audioBlob.play();
+
+    }} catch (e) {{
+        // Fallback to local pitch-down if Cloud API is unreachable
+        fallbackBrowserSpeak(text, onComplete);
+    }}
 }}
 
-function speakText(text, onComplete) {{
+function fallbackBrowserSpeak(text, onComplete) {{
     if ('speechSynthesis' in window) {{
         window.speechSynthesis.cancel();
         const utterance = new SpeechSynthesisUtterance(text);
-        const maleVoice = getStrictMaleVoice();
-        
-        if (maleVoice) {{
-            utterance.voice = maleVoice;
-        }}
-        
-        utterance.lang = 'en-US';
-        utterance.pitch = 0.75; // Lower pitch significantly to force a deeper male tone on any system voice
-        utterance.rate = 1.0;
-
+        utterance.pitch = 0.5; // Forces pitch low enough to produce a male register on default voices
+        utterance.rate = 0.95;
         utterance.onend = () => {{ if (onComplete) onComplete(); }};
-        utterance.onerror = () => {{ if (onComplete) onComplete(); }};
-        
         window.speechSynthesis.speak(utterance);
     }} else if (onComplete) {{
         onComplete();
@@ -3603,7 +3589,7 @@ async function queryGeminiVoice(userInput) {{
         textDiv.innerText = reply;
         badge.innerText = "SPEAKING";
         
-        speakText(reply, () => {{
+        speakTextServer(reply, () => {{
             if (isListening) {{
                 badge.innerText = "LISTENING";
                 try {{ recognition.start(); }} catch(e){{}}
@@ -3652,7 +3638,7 @@ function toggleVoiceSession() {{
         badge.innerText = "LISTENING";
         textDiv.innerText = "Listening clearly...";
         
-        speakText("Online. How can I help?", () => {{
+        speakTextServer("Online. How can I help?", () => {{
             if (recognition) {{
                 try {{ recognition.start(); }} catch(e){{}}
             }}
@@ -3667,6 +3653,10 @@ function toggleVoiceSession() {{
         
         if (recognition) {{
             try {{ recognition.stop(); }} catch(e){{}}
+        }}
+        if (currentAudio) {{
+            currentAudio.pause();
+            currentAudio = null;
         }}
         window.speechSynthesis.cancel();
         isListening = false;
