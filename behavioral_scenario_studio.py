@@ -462,12 +462,6 @@ def get_session_factory(_engine):
 
 engine = get_db_engine()
 
-# Fix for OperationalError: Execute create_all OUTSIDE the cache 
-# so Streamlit creates any new tables (like RapidStateLog) upon reload.
-Base.metadata.create_all(bind=engine)
-SessionLocal = get_session_factory(engine)
-
-
 class Event(Base):
     __tablename__ = "events"
 
@@ -587,6 +581,12 @@ class RapidStateLog(Base):
     current_state = Column(String, nullable=False)
 
     event = relationship("Event")
+
+
+# Fix for OperationalError: Execute create_all OUTSIDE the cache 
+# AND AFTER ALL MODELS ARE DEFINED so Streamlit creates any new tables upon reload.
+Base.metadata.create_all(bind=engine)
+SessionLocal = get_session_factory(engine)
 
 
 def db_session():
@@ -2852,7 +2852,7 @@ elif page == "Counterfactual Lab":
                         {clean_text(cf["before_state"])}
                     </div>
                 </div>
-                """)
+            """)
 
             with c2:
 
@@ -2865,7 +2865,7 @@ elif page == "Counterfactual Lab":
                         {clean_text(cf["after_state"])}
                     </div>
                 </div>
-                """)
+            """)
 
             render_html('<div class="section-heading">Predicted effects</div>')
 
