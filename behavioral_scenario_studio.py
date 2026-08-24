@@ -37,6 +37,7 @@ IMPORTANT METHODOLOGICAL PRINCIPLES
 
 import os
 import re
+import json
 import html
 import uuid
 import math
@@ -583,6 +584,13 @@ class RapidStateLog(Base):
     event = relationship("Event")
 
 
+class SessionCache(Base):
+    __tablename__ = "session_cache"
+    
+    session_token = Column(String, primary_key=True)
+    data = Column(Text, nullable=False, default="{}")
+
+
 Base.metadata.create_all(bind=engine)
 
 # Migration helpers for database columns
@@ -880,6 +888,19 @@ Prefer:
 # 8. SESSION STATE INIT & RESTORE
 # ============================================================
 
+db = db_session()
+
+# Restore persistent micro-interaction and details state from UI cache automatically
+cache_record = db.query(SessionCache).filter(SessionCache.session_token == USER_SESSION_TOKEN).first()
+if cache_record and cache_record.data:
+    try:
+        persisted_state = json.loads(cache_record.data)
+        for k, v in persisted_state.items():
+            if k not in st.session_state:
+                st.session_state[k] = v
+    except Exception:
+        pass
+
 DEFAULT_STATE = {
     "active_event_id": None,
     "active_interaction_id": None,
@@ -893,8 +914,6 @@ DEFAULT_STATE = {
 for key, value in DEFAULT_STATE.items():
     if key not in st.session_state:
         st.session_state[key] = value
-
-db = db_session()
 
 # Restore user active session workspace context automatically from database on refresh
 if st.session_state.active_event_id is None:
@@ -1604,6 +1623,9 @@ with header_col2:
             db.query(Event).filter(Event.session_token == USER_SESSION_TOKEN).delete(synchronize_session=False)
 
         db.query(RapidStateLog).filter(RapidStateLog.session_token == USER_SESSION_TOKEN).delete(synchronize_session=False)
+        
+        # Purge the session UI cache fully
+        db.query(SessionCache).filter(SessionCache.session_token == USER_SESSION_TOKEN).delete(synchronize_session=False)
         db.commit()
 
         st.session_state.clear()
@@ -3580,7 +3602,7 @@ async function queryGeminiVoice(userInput) {{
     badge.innerText = "THINKING";
 
     try {{
-        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${{selectedModel}}:generateContent?key=${{apiKey}}`, {{
+        const response = await fetch(`[https://generativelanguage.googleapis.com/v1beta/models/$](https://generativelanguage.googleapis.com/v1beta/models/$){{selectedModel}}:generateContent?key=${{apiKey}}`, {{
             method: 'POST',
             headers: {{ 'Content-Type': 'application/json' }},
             body: JSON.stringify({{
@@ -3718,7 +3740,34 @@ render_html("""
 
 
 # ============================================================
-# 27. CLEANUP
+# 27. CLEANUP & STATE PERSISTENCE
 # ============================================================
+
+# Safely serialize and permanently record the user's active UI layout, models, 
+# and input states against their specific token to survive refreshes.
+state_to_save = {}
+for k, v in st.session_state.items():
+    if k.startswith("FormSubmitter"):
+        continue
+    try:
+        # Strictly ensure only valid JSON-serializable keys pass to DB to avoid crashes
+        json.dumps(v)
+        state_to_save[k] = v
+    except Exception:
+        pass
+
+try:
+    data_str = json.dumps(state_to_save)
+    active_cache_record = db.query(SessionCache).filter(SessionCache.session_token == USER_SESSION_TOKEN).first()
+    
+    if not active_cache_record:
+        new_cache_record = SessionCache(session_token=USER_SESSION_TOKEN, data=data_str)
+        db.add(new_cache_record)
+    else:
+        active_cache_record.data = data_str
+        
+    db.commit()
+except Exception:
+    pass
 
 db.close()
