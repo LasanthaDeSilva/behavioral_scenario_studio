@@ -447,10 +447,13 @@ Base = declarative_base()
 def get_db_engine():
     engine_kwargs = {}
     if DATABASE_URL.startswith("sqlite"):
-        engine_kwargs["connect_args"] = {"check_same_thread": False}
+        # Added timeout to prevent database locks causing OperationalError
+        engine_kwargs["connect_args"] = {
+            "check_same_thread": False,
+            "timeout": 15
+        }
     
     eng = create_engine(DATABASE_URL, **engine_kwargs)
-    Base.metadata.create_all(eng)
     return eng
 
 @st.cache_resource
@@ -458,6 +461,10 @@ def get_session_factory(_engine):
     return sessionmaker(bind=_engine, autoflush=False, autocommit=False)
 
 engine = get_db_engine()
+
+# Fix for OperationalError: Execute create_all OUTSIDE the cache 
+# so Streamlit creates any new tables (like RapidStateLog) upon reload.
+Base.metadata.create_all(bind=engine)
 SessionLocal = get_session_factory(engine)
 
 
