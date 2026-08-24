@@ -614,6 +614,24 @@ def db_session():
 
 
 # ============================================================
+# 4.5 DATABASE REHYDRATION (REFRESH SURVIVAL)
+# ============================================================
+db = db_session()
+
+# If session state was wiped by a refresh, rehydrate from the database
+# to guarantee the user's micro-interactions and current position are kept.
+if "active_event_id" not in st.session_state or st.session_state.active_event_id is None:
+    latest_event = db.query(Event).filter(Event.session_token == USER_SESSION_TOKEN).order_by(Event.date.desc()).first()
+    if latest_event:
+        st.session_state.active_event_id = latest_event.id
+
+if ("active_interaction_id" not in st.session_state or st.session_state.active_interaction_id is None) and st.session_state.get("active_event_id"):
+    latest_interaction = db.query(Interaction).filter(Interaction.event_id == st.session_state.active_event_id).order_by(Interaction.started_at.desc()).first()
+    if latest_interaction and not latest_interaction.ended_at:
+        st.session_state.active_interaction_id = latest_interaction.id
+
+
+# ============================================================
 # 5. GEMINI SCHEMAS
 # ============================================================
 
@@ -1613,13 +1631,6 @@ if client is None:
         "Gemini is not configured. Add GEMINI_API_KEY "
         "to Streamlit secrets or the environment."
     )
-
-
-# ============================================================
-# 17. DATABASE INSTANCE
-# ============================================================
-
-db = db_session()
 
 
 # ============================================================
@@ -3292,164 +3303,186 @@ with st.expander(
 
 
 # ============================================================
-# 25. FLOATING LIVE AI VOICE WIDGET (HTML / JS / WEB SPEECH)
+# 25. FLOATING LIVE AI VOICE WIDGET (DOM INJECTION)
 # ============================================================
+# Instead of components.html (which hides in an iframe with height=0), 
+# we use st.markdown with an onload injection to break out into the global DOM.
 
 voice_html = """
 <style>
 .voice-fab {
     position: fixed;
-    bottom: 25px;
-    right: 25px;
-    width: 60px;
-    height: 60px;
+    bottom: 30px;
+    right: 30px;
+    width: 56px;
+    height: 56px;
     border-radius: 50%;
-    background: linear-gradient(135deg, #5b8cff, #3a68d9);
-    box-shadow: 0 4px 20px rgba(91,140,255,0.4);
+    background: rgba(20, 20, 25, 0.7);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
     display: flex;
     align-items: center;
     justify-content: center;
     cursor: pointer;
     z-index: 999999;
-    transition: transform 0.2s ease, box-shadow 0.2s ease;
+    transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .voice-fab:hover {
-    transform: scale(1.08);
-    box-shadow: 0 6px 25px rgba(91,140,255,0.6);
+    transform: translateY(-3px) scale(1.04);
+    background: rgba(35, 35, 45, 0.85);
+    border-color: rgba(255, 255, 255, 0.25);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
 }
 
 .voice-fab svg {
-    fill: #ffffff;
-    width: 26px;
-    height: 26px;
+    fill: none;
+    stroke: #ffffff;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    width: 22px;
+    height: 22px;
+    opacity: 0.9;
 }
 
 .voice-panel {
     position: fixed;
-    bottom: 95px;
-    right: 25px;
+    bottom: 100px;
+    right: 30px;
     width: 320px;
-    background: #111114;
-    border: 1px solid #28282e;
-    border-radius: 14px;
-    padding: 16px;
-    box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+    background: rgba(17, 17, 20, 0.85);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 16px;
+    padding: 18px;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.6);
     z-index: 999999;
     display: none;
     font-family: -apple-system, BlinkMacSystemFont, sans-serif;
     color: #f5f5f7;
+    transition: opacity 0.3s ease;
 }
 
 .voice-status {
-    font-size: 0.75rem;
+    font-size: 0.72rem;
     text-transform: uppercase;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.12em;
     color: #5b8cff;
-    margin-bottom: 8px;
+    margin-bottom: 12px;
     font-weight: 600;
 }
 
 .voice-text {
-    font-size: 0.88rem;
-    color: #a1a1aa;
-    min-height: 50px;
+    font-size: 0.9rem;
+    color: #d4d4d8;
+    min-height: 40px;
     max-height: 120px;
     overflow-y: auto;
-    margin-bottom: 12px;
-    line-height: 1.4;
+    margin-bottom: 4px;
+    line-height: 1.5;
 }
 
 .listening-pulse {
-    animation: pulse 1.5s infinite;
+    animation: pulse 2s infinite cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 @keyframes pulse {
-    0% { box-shadow: 0 0 0 0 rgba(91,140,255,0.7); }
-    70% { box-shadow: 0 0 0 15px rgba(91,140,255,0); }
+    0% { box-shadow: 0 0 0 0 rgba(91,140,255,0.4); }
+    70% { box-shadow: 0 0 0 12px rgba(91,140,255,0); }
     100% { box-shadow: 0 0 0 0 rgba(91,140,255,0); }
 }
 </style>
 
 <div id="voicePanel" class="voice-panel">
-    <div id="voiceStatus" class="voice-status">AI Live Voice Assistant</div>
-    <div id="voiceText" class="voice-text">Click the floating microphone icon to start real-time listening and voice guidance...</div>
+    <div id="voiceStatus" class="voice-status">AI Voice Copilot</div>
+    <div id="voiceText" class="voice-text">Click the microphone to begin live interaction...</div>
 </div>
 
-<div id="voiceFab" class="voice-fab" onclick="toggleVoiceSession()">
+<div id="voiceFab" class="voice-fab" onclick="window.toggleVoiceSession && window.toggleVoiceSession()">
     <svg viewBox="0 0 24 24">
-        <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
-        <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+        <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+        <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+        <line x1="12" y1="19" x2="12" y2="22"></line>
     </svg>
 </div>
 
-<script>
-let isListening = false;
-let recognition = null;
+<img src onerror="
+    if (!window.voiceInitialized) {
+        window.voiceInitialized = true;
+        window.isListening = false;
+        window.recognition = null;
 
-if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
+        if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            window.recognition = new SpeechRecognition();
+            window.recognition.continuous = true;
+            window.recognition.interimResults = true;
 
-    recognition.onresult = function(event) {
-        let transcript = '';
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-            transcript += event.results[i][0].transcript;
+            window.recognition.onresult = function(event) {
+                let transcript = '';
+                for (let i = event.resultIndex; i < event.results.length; ++i) {
+                    transcript += event.results[i][0].transcript;
+                }
+                const textDiv = document.getElementById('voiceText');
+                if(textDiv) textDiv.innerText = 'You: ' + transcript;
+            };
+
+            window.recognition.onerror = function(event) {
+                const statusDiv = document.getElementById('voiceStatus');
+                if(statusDiv) statusDiv.innerText = 'Listening Error';
+            };
         }
-        document.getElementById('voiceText').innerText = "You: " + transcript;
-    };
 
-    recognition.onerror = function(event) {
-        document.getElementById('voiceStatus').innerText = "Listening Error";
-    };
-}
+        window.speakText = function(text) {
+            if ('speechSynthesis' in window) {
+                window.speechSynthesis.cancel();
+                const utterance = new SpeechSynthesisUtterance(text);
+                utterance.rate = 1.0;
+                utterance.pitch = 1.0;
+                window.speechSynthesis.speak(utterance);
+            }
+        };
 
-function speakText(text) {
-    if ('speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.rate = 1.0;
-        utterance.pitch = 1.0;
-        window.speechSynthesis.speak(utterance);
+        window.toggleVoiceSession = function() {
+            const panel = document.getElementById('voicePanel');
+            const fab = document.getElementById('voiceFab');
+            const status = document.getElementById('voiceStatus');
+            const textDiv = document.getElementById('voiceText');
+
+            if (!window.isListening) {
+                panel.style.display = 'block';
+                fab.classList.add('listening-pulse');
+                status.innerText = 'Live AI Active (Listening...)';
+                textDiv.innerText = 'Listening to your environment...';
+                
+                window.speakText('Live intelligence active.');
+
+                if (window.recognition) {
+                    try { window.recognition.start(); } catch(e){}
+                }
+                window.isListening = true;
+            } else {
+                fab.classList.remove('listening-pulse');
+                status.innerText = 'Voice Session Paused';
+                textDiv.innerText = 'Copilot paused.';
+                window.speakText('Copilot paused.');
+                
+                if (window.recognition) {
+                    try { window.recognition.stop(); } catch(e){}
+                }
+                window.isListening = false;
+                setTimeout(() => { panel.style.display = 'none'; }, 2000);
+            }
+        };
     }
-}
-
-function toggleVoiceSession() {
-    const panel = document.getElementById('voicePanel');
-    const fab = document.getElementById('voiceFab');
-    const status = document.getElementById('voiceStatus');
-    const textDiv = document.getElementById('voiceText');
-
-    if (!isListening) {
-        panel.style.display = 'block';
-        fab.classList.add('listening-pulse');
-        status.innerText = "Live AI Voice Active (Listening...)";
-        textDiv.innerText = "Listening to your instructions... Speak into your microphone.";
-        
-        speakText("Live outreach voice assistant active. I am listening.");
-
-        if (recognition) {
-            try { recognition.start(); } catch(e){}
-        }
-        isListening = true;
-    } else {
-        fab.classList.remove('listening-pulse');
-        status.innerText = "Voice Session Paused";
-        textDiv.innerText = "Voice assistant paused.";
-        speakText("Voice assistant paused.");
-        if (recognition) {
-            try { recognition.stop(); } catch(e){}
-        }
-        isListening = false;
-        setTimeout(() => { panel.style.display = 'none'; }, 2000);
-    }
-}
-</script>
+" style="display:none;">
 """
 
-components.html(voice_html, height=0, width=0)
+st.markdown(voice_html, unsafe_allow_html=True)
 
 
 # ============================================================
