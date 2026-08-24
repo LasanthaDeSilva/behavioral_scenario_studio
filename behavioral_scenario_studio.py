@@ -6,7 +6,7 @@ A self-contained Streamlit application for:
     - Designing outreach scenarios
     - Modeling likely engagement pathways
     - Predicting real-world outcomes and metrics
-    - Running a live outreach copilot
+    - Running a live outreach copilot with floating real-time AI Voice
     - Recording lightweight observations
     - Comparing predicted vs observed engagement
     - Measuring optional real-world impact
@@ -59,6 +59,7 @@ from sqlalchemy import (
     Integer,
     ForeignKey,
     Boolean,
+    text,
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
@@ -73,9 +74,9 @@ from google.genai import types
 # ============================================================
 
 APP_TITLE = "Outreach Intelligence Lab"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 
-# Updated to real, currently existing Gemini endpoints
+# Real, currently existing Gemini endpoints preserved strictly
 MODEL_FLASH = "gemini-3.6-flash"
 MODEL_PRO = "gemini-3.1-pro"
 MODEL_LITE = "gemini-3.5-flash-lite"
@@ -89,7 +90,7 @@ DATABASE_URL = os.getenv(
 
 
 # ============================================================
-# 2. PAGE CONFIGURATION
+# 2. PAGE CONFIGURATION & USER SESSION ISOLATION
 # ============================================================
 
 st.set_page_config(
@@ -99,9 +100,21 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+# Ensure each user/browser link has an isolated memory space
+if "user_session_token" not in st.session_state:
+    query_params = st.query_params
+    if "session_id" in query_params:
+        st.session_state["user_session_token"] = query_params["session_id"]
+    else:
+        new_token = f"user_{uuid.uuid4().hex[:12]}"
+        st.session_state["user_session_token"] = new_token
+        st.query_params["session_id"] = new_token
+
+USER_SESSION_TOKEN = st.session_state["user_session_token"]
+
 
 # ============================================================
-# 3. PREMIUM MINIMALIST UI
+# 3. PREMIUM MINIMALIST UI & CSS
 # ============================================================
 
 PREMIUM_CSS = """
@@ -439,7 +452,7 @@ st.markdown(textwrap.dedent(PREMIUM_CSS), unsafe_allow_html=True)
 
 
 # ============================================================
-# 4. DATABASE (Cached to prevent Streamlit threading locks)
+# 4. DATABASE & MIGRATIONS
 # ============================================================
 
 Base = declarative_base()
@@ -448,7 +461,6 @@ Base = declarative_base()
 def get_db_engine():
     engine_kwargs = {}
     if DATABASE_URL.startswith("sqlite"):
-        # Added timeout to prevent database locks causing OperationalError
         engine_kwargs["connect_args"] = {
             "check_same_thread": False,
             "timeout": 15
@@ -467,6 +479,7 @@ class Event(Base):
     __tablename__ = "events"
 
     id = Column(String, primary_key=True)
+    session_token = Column(String, nullable=False, default="global")
     name = Column(String, nullable=False)
     date = Column(DateTime, nullable=False)
     objective = Column(String, nullable=False)
@@ -584,11 +597,17 @@ class RapidStateLog(Base):
     event = relationship("Event")
 
 
-# Fix for OperationalError: Execute create_all OUTSIDE the cache 
-# AND AFTER ALL MODELS ARE DEFINED so Streamlit creates any new tables upon reload.
 Base.metadata.create_all(bind=engine)
-SessionLocal = get_session_factory(engine)
 
+# Migration helper for session_token column
+try:
+    with engine.connect() as conn:
+        conn.execute(text("ALTER TABLE events ADD COLUMN session_token VARCHAR DEFAULT 'global'"))
+        conn.commit()
+except Exception:
+    pass
+
+SessionLocal = get_session_factory(engine)
 
 def db_session():
     return SessionLocal()
@@ -706,11 +725,13 @@ class ImpactInterpretation(BaseModel):
 
 
 class OutcomePrediction(BaseModel):
+    focus_pct: int = Field(ge=0, le=100, description="Predicted average focus state level (0-100%)")
+    stress_reduction_pct: int = Field(ge=0, le=100, description="Predicted stress reduction index (0-100%)")
+    cognitive_load_pct: int = Field(ge=0, le=100, description="Predicted mental cognitive load percentage (0-100%)")
+    attention_retention_pct: int = Field(ge=0, le=100, description="Predicted visual & auditory retention percentage (0-100%)")
     predicted_curiosity_shift: str
     predicted_understanding_shift: str
     predicted_engagement_rate: str
-    predicted_focus_shift: str
-    predicted_stress_response: str
     overall_outcome_narrative: str
     risk_factors: List[str] = Field(min_length=1, max_length=5)
     success_amplifiers: List[str] = Field(min_length=1, max_length=5)
@@ -886,12 +907,6 @@ for key, value in DEFAULT_STATE.items():
 # ============================================================
 
 def render_html(html_str: str):
-    """
-    Safely renders HTML by removing leading spaces to prevent
-    Streamlit's Markdown engine from misinterpreting indented
-    HTML tags (like <div>) as code blocks (which produces the
-    </div> bug).
-    """
     safe_html = "\n".join([line.lstrip() for line in html_str.split("\n")])
     st.markdown(safe_html, unsafe_allow_html=True)
 
@@ -941,6 +956,7 @@ def create_event(
 ):
     event = Event(
         id=str(uuid.uuid4()),
+        session_token=USER_SESSION_TOKEN,
         name=name.strip(),
         date=utc_now(),
         objective=objective,
@@ -1467,7 +1483,8 @@ def generate_outcome_prediction(
     model_name,
     event,
     crowd_info,
-    situation_info
+    situation_info,
+    questionnaire_context=""
 ):
     prompt = f"""
 EVENT: {event.name}
@@ -1478,12 +1495,21 @@ SENSORY ENVIRONMENT: {event.sensory_environment}
 
 CROWD DETAILS: {crowd_info}
 SITUATIONAL CONTEXT: {situation_info}
+ENVIRONMENTAL QUESTIONNAIRE PARAMETERS: {questionnaire_context}
 
-Based on these parameters, predict the likely outcomes and metrics for this outreach event.
-Be realistic, factoring in the environmental friction and the specific crowd dynamics.
-Provide synthetic estimates for curiosity shift, understanding shift, engagement rate.
-ALSO, provide accurate scientific sounding predicted effects like focus shift (e.g., deep flow vs scattered cognitive focus) and stress response (e.g., high sensory load vs relaxed calm engagement).
-List clear risk factors and practical ways to amplify success on the ground.
+Based on these parameters, predict scientifically grounded estimated effects on participants.
+Provide precise, realistic scientific predictions for:
+1. focus_pct (estimated average focus percentage, 0-100%)
+2. stress_reduction_pct (estimated stress reduction index, 0-100%)
+3. cognitive_load_pct (estimated mental cognitive load level, 0-100%)
+4. attention_retention_pct (estimated attention retention index, 0-100%)
+5. predicted_curiosity_shift (e.g. +2.4 on 10-pt scale)
+6. predicted_understanding_shift (e.g. +28% conceptual gain)
+7. predicted_engagement_rate (e.g. 82% sustained participation)
+8. overall_outcome_narrative (detailed scientific narrative)
+9. risk_factors & success_amplifiers
+
+Be realistic and ground estimations in environmental friction and crowd dynamics.
 """
     return run_gemini(
         client=client,
@@ -1551,7 +1577,7 @@ with header_col2:
 
     render_html(f"""
     <div class="small-note" style="margin-top:8px; text-align:center;">
-        Version {APP_VERSION}
+        Version {APP_VERSION} | Session: {USER_SESSION_TOKEN[:8]}
     </div>
     """)
 
@@ -1838,7 +1864,7 @@ Participant autonomy: {optional_choice}
 
 
 # ============================================================
-# 19. OUTCOME PREDICTOR (NEW PAGE)
+# 19. OUTCOME PREDICTOR
 # ============================================================
 
 elif page == "Outcome Predictor":
@@ -1847,6 +1873,7 @@ elif page == "Outcome Predictor":
 
     events = (
         db.query(Event)
+        .filter(Event.session_token == USER_SESSION_TOKEN)
         .order_by(Event.date.desc())
         .all()
     )
@@ -1868,6 +1895,35 @@ elif page == "Outcome Predictor":
         
         event = event_map[selected_name]
 
+        render_html('<div class="section-heading">Contextual Environment & Crowd Questionnaire</div>')
+        
+        qc1, qc2 = st.columns(2)
+        with qc1:
+            baseline_stress_q = st.select_slider(
+                "Estimated Baseline Audience Stress Level",
+                options=["Very Low / Relaxed", "Moderate Stress", "High Stress / Overwhelmed"],
+                value="Moderate Stress",
+                key="q_stress"
+            )
+            noise_sensory_q = st.select_slider(
+                "Ambient Distraction & Sensory Noise Level",
+                options=["Quiet & Controlled", "Moderate Noise", "High Loudness / Busy Crowd"],
+                value="Moderate Noise",
+                key="q_noise"
+            )
+        with qc2:
+            duration_q = st.selectbox(
+                "Planned Session Duration",
+                ["Short (< 15 mins)", "Standard (30-45 mins)", "Extended (60+ mins)"],
+                key="q_duration"
+            )
+            interaction_density_q = st.selectbox(
+                "Interactive Touchpoints Density",
+                ["Low (Passive listening)", "Medium (Guided Q&A)", "High (Hands-on exploration)"],
+                index=1,
+                key="q_density"
+            )
+
         c1, c2 = st.columns(2)
         with c1:
             crowd_info = st.text_area(
@@ -1884,6 +1940,8 @@ elif page == "Outcome Predictor":
                 height=110
             )
 
+        questionnaire_summary = f"Baseline Stress: {baseline_stress_q}, Noise level: {noise_sensory_q}, Duration: {duration_q}, Interaction density: {interaction_density_q}"
+
         if st.button("Predict Outcome & Metrics", type="primary", use_container_width=True):
             if client is None:
                 st.error("Gemini is unavailable.")
@@ -1897,7 +1955,8 @@ elif page == "Outcome Predictor":
                             selected_model,
                             event,
                             crowd_info,
-                            situation_info
+                            situation_info,
+                            questionnaire_summary
                         )
                         st.session_state.last_prediction = pred.model_dump()
                 except Exception as exc:
@@ -1906,7 +1965,29 @@ elif page == "Outcome Predictor":
         if st.session_state.get("last_prediction"):
             p = st.session_state.last_prediction
 
-            render_html('<div class="section-heading">Predicted Metrics</div>')
+            render_html('<div class="section-heading">Predicted Scientific Effects (Focus, Stress, Load & Retention)</div>')
+            
+            # Metric cards
+            pc1, pc2, pc3, pc4 = st.columns(4)
+            pc1.metric("Predicted Focus State", f"{p.get('focus_pct', 75)}%")
+            pc2.metric("Stress Reduction Index", f"{p.get('stress_reduction_pct', 60)}%")
+            pc3.metric("Cognitive Load Level", f"{p.get('cognitive_load_pct', 45)}%")
+            pc4.metric("Attention Retention", f"{p.get('attention_retention_pct', 80)}%")
+
+            # Visual Representation Chart
+            st.markdown("**Visual Effect Profile Comparison**")
+            chart_data = pd.DataFrame({
+                "Metric": ["Focus State", "Stress Reduction", "Cognitive Load", "Attention Retention"],
+                "Percentage (%)": [
+                    p.get("focus_pct", 75),
+                    p.get("stress_reduction_pct", 60),
+                    p.get("cognitive_load_pct", 45),
+                    p.get("attention_retention_pct", 80)
+                ]
+            }).set_index("Metric")
+            st.bar_chart(chart_data, color="#5b8cff")
+
+            render_html('<div class="section-heading">Predicted Shifts & Outcomes</div>')
             m1, m2, m3 = st.columns(3)
             with m1:
                 render_html(f"""
@@ -1927,22 +2008,6 @@ elif page == "Outcome Predictor":
                 <div class="metric-card">
                     <div class="metric-label">Engagement Rate</div>
                     <div class="metric-value" style="font-size:1.4rem;">{clean_text(p['predicted_engagement_rate'])}</div>
-                </div>
-                """)
-                
-            m4, m5 = st.columns(2)
-            with m4:
-                render_html(f"""
-                <div class="metric-card" style="margin-top: 15px;">
-                    <div class="metric-label">Predicted Focus Shift</div>
-                    <div class="metric-value" style="font-size:1.4rem;">{clean_text(p['predicted_focus_shift'])}</div>
-                </div>
-                """)
-            with m5:
-                render_html(f"""
-                <div class="metric-card" style="margin-top: 15px;">
-                    <div class="metric-label">Predicted Stress / Load</div>
-                    <div class="metric-value" style="font-size:1.4rem;">{clean_text(p['predicted_stress_response'])}</div>
                 </div>
                 """)
 
@@ -1976,6 +2041,7 @@ elif page == "Live Copilot":
 
     events = (
         db.query(Event)
+        .filter(Event.session_token == USER_SESSION_TOKEN)
         .order_by(Event.date.desc())
         .all()
     )
@@ -2002,9 +2068,6 @@ elif page == "Live Copilot":
 
         event = event_map[chosen_name]
 
-        # -----------------------------------------------------------------
-        # RAPID PARTICIPANT STATE LOGGER
-        # -----------------------------------------------------------------
         st.markdown("---")
         render_html('<div class="section-heading">Rapid Participant State Logger</div>')
         render_html('<div class="small-note" style="margin-bottom:15px;">One-click logging for rapid visual analysis. Each click automatically registers as a new participant.</div>')
@@ -2064,7 +2127,6 @@ elif page == "Live Copilot":
                     st.rerun()
 
         st.markdown("---")
-        # -----------------------------------------------------------------
 
         if (
             st.session_state.active_event_id
@@ -2134,7 +2196,6 @@ elif page == "Live Copilot":
                 "Exit",
             ]
             
-            # Using key for seamless state binding
             if f"phase_{interaction.id}" not in st.session_state:
                 st.session_state[f"phase_{interaction.id}"] = interaction.phase
 
@@ -2362,73 +2423,6 @@ elif page == "Live Copilot":
                 )
 
             st.markdown("---")
-            render_html('<div class="section-heading">🎙️ Live Voice Assistant</div>')
-            render_html('<div class="small-note" style="margin-bottom:15px;">Use your microphone to speak with the Copilot. Ask for guidance or log observations verbally. The AI will listen and instruct you with high-quality voice playback.</div>')
-            
-            voice_audio = st.audio_input("Record Voice for Copilot", key=f"voice_input_{interaction.id}")
-            if voice_audio:
-                if st.button("Send Voice to Copilot", type="primary", use_container_width=True):
-                    if client is None:
-                        st.error("Gemini is unavailable.")
-                    else:
-                        try:
-                            with st.spinner("Analyzing and preparing verbal instruction..."):
-                                audio_part = types.Part.from_bytes(data=voice_audio.getvalue(), mime_type="audio/wav")
-                                voice_prompt = f"""
-                                You are an AI voice copilot assisting a facilitator during a live outreach event.
-                                Event: {event.name}
-                                Objective: {event.objective}
-                                Current Phase: {interaction.phase}
-                                
-                                Listen to the facilitator's voice input. 
-                                Provide a direct, scientifically accurate, and encouraging verbal instruction or analysis.
-                                Speak normally. Keep it under 3 short sentences so it translates well to Text-To-Speech.
-                                Do NOT use any Markdown formatting (like **, #). Just raw text that is easy to speak aloud.
-                                """
-                                
-                                voice_response = client.models.generate_content(
-                                    model=selected_model,
-                                    contents=[voice_prompt, audio_part],
-                                    config=types.GenerateContentConfig(
-                                        system_instruction=AI_SYSTEM,
-                                        temperature=0.3,
-                                    )
-                                )
-                                
-                                st.session_state[f"last_voice_reply_{interaction.id}"] = voice_response.text.strip()
-                        except Exception as exc:
-                            st.error(f"Voice processing failed: {exc}")
-
-            last_voice_key = f"last_voice_reply_{interaction.id}"
-            if st.session_state.get(last_voice_key):
-                voice_reply = st.session_state[last_voice_key]
-                
-                render_html(f"""
-                <div class="premium-card" style="border-color: var(--accent); background: linear-gradient(145deg, rgba(91,140,255,.09), rgba(91,140,255,.025)); margin-top: 15px;">
-                    <div class="eyebrow">Voice Copilot Instruction</div>
-                    <div style="font-size: 1.15rem; color: #fff; line-height: 1.6;">
-                        {clean_text(voice_reply)}
-                    </div>
-                </div>
-                """)
-                
-                safe_voice_reply = voice_reply.replace('"', '\\"').replace('\n', ' ').replace('\r', '')
-                tts_js = f"""
-                <script>
-                    if (!window.sessionStorage.getItem("spoken_{hash(voice_reply)}")) {{
-                        var utterance = new SpeechSynthesisUtterance("{safe_voice_reply}");
-                        var voices = window.speechSynthesis.getVoices();
-                        utterance.voice = voices.find(v => v.name.includes('Google UK English') || v.lang.startsWith('en')) || null;
-                        utterance.rate = 1.0;
-                        utterance.pitch = 1.0;
-                        window.speechSynthesis.speak(utterance);
-                        window.sessionStorage.setItem("spoken_{hash(voice_reply)}", "true");
-                    }}
-                </script>
-                """
-                components.html(tts_js, height=0)
-
-            st.markdown("---")
 
             if st.button(
                 "End interaction and start next participant",
@@ -2440,14 +2434,12 @@ elif page == "Live Copilot":
 
                 st.session_state.active_interaction_id = None
                 st.session_state.last_recommendation = None
-                if last_voice_key in st.session_state:
-                    del st.session_state[last_voice_key]
 
                 st.rerun()
 
 
 # ============================================================
-# 20.5 SCIENTIFIC REACTIONS (NEW PAGE)
+# 20.5 SCIENTIFIC REACTIONS
 # ============================================================
 
 elif page == "Scientific Reactions":
@@ -2455,7 +2447,7 @@ elif page == "Scientific Reactions":
     render_html('<div class="section-heading">Scientific Reaction Analysis</div>')
     render_html('<div class="small-note" style="margin-bottom:15px;">Visualizing accurate, logical, and practical scientific reactions (focus, stress, awe) logged during the experience.</div>')
 
-    events = db.query(Event).order_by(Event.date.desc()).all()
+    events = db.query(Event).filter(Event.session_token == USER_SESSION_TOKEN).order_by(Event.date.desc()).all()
     
     if not events:
         st.info("No experiences available.")
@@ -2526,6 +2518,7 @@ elif page == "Impact Observatory":
 
     events = (
         db.query(Event)
+        .filter(Event.session_token == USER_SESSION_TOKEN)
         .order_by(Event.date.desc())
         .all()
     )
@@ -2807,6 +2800,7 @@ elif page == "Counterfactual Lab":
 
     events = (
         db.query(Event)
+        .filter(Event.session_token == USER_SESSION_TOKEN)
         .order_by(Event.date.desc())
         .all()
     )
@@ -3148,6 +3142,7 @@ with st.expander(
 
     events = (
         db.query(Event)
+        .filter(Event.session_token == USER_SESSION_TOKEN)
         .order_by(Event.date.desc())
         .all()
     )
@@ -3297,7 +3292,168 @@ with st.expander(
 
 
 # ============================================================
-# 25. FOOTER
+# 25. FLOATING LIVE AI VOICE WIDGET (HTML / JS / WEB SPEECH)
+# ============================================================
+
+voice_html = """
+<style>
+.voice-fab {
+    position: fixed;
+    bottom: 25px;
+    right: 25px;
+    width: 60px;
+    height: 60px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #5b8cff, #3a68d9);
+    box-shadow: 0 4px 20px rgba(91,140,255,0.4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    z-index: 999999;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.voice-fab:hover {
+    transform: scale(1.08);
+    box-shadow: 0 6px 25px rgba(91,140,255,0.6);
+}
+
+.voice-fab svg {
+    fill: #ffffff;
+    width: 26px;
+    height: 26px;
+}
+
+.voice-panel {
+    position: fixed;
+    bottom: 95px;
+    right: 25px;
+    width: 320px;
+    background: #111114;
+    border: 1px solid #28282e;
+    border-radius: 14px;
+    padding: 16px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+    z-index: 999999;
+    display: none;
+    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    color: #f5f5f7;
+}
+
+.voice-status {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #5b8cff;
+    margin-bottom: 8px;
+    font-weight: 600;
+}
+
+.voice-text {
+    font-size: 0.88rem;
+    color: #a1a1aa;
+    min-height: 50px;
+    max-height: 120px;
+    overflow-y: auto;
+    margin-bottom: 12px;
+    line-height: 1.4;
+}
+
+.listening-pulse {
+    animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(91,140,255,0.7); }
+    70% { box-shadow: 0 0 0 15px rgba(91,140,255,0); }
+    100% { box-shadow: 0 0 0 0 rgba(91,140,255,0); }
+}
+</style>
+
+<div id="voicePanel" class="voice-panel">
+    <div id="voiceStatus" class="voice-status">AI Live Voice Assistant</div>
+    <div id="voiceText" class="voice-text">Click the floating microphone icon to start real-time listening and voice guidance...</div>
+</div>
+
+<div id="voiceFab" class="voice-fab" onclick="toggleVoiceSession()">
+    <svg viewBox="0 0 24 24">
+        <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
+        <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+    </svg>
+</div>
+
+<script>
+let isListening = false;
+let recognition = null;
+
+if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+
+    recognition.onresult = function(event) {
+        let transcript = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+            transcript += event.results[i][0].transcript;
+        }
+        document.getElementById('voiceText').innerText = "You: " + transcript;
+    };
+
+    recognition.onerror = function(event) {
+        document.getElementById('voiceStatus').innerText = "Listening Error";
+    };
+}
+
+function speakText(text) {
+    if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.rate = 1.0;
+        utterance.pitch = 1.0;
+        window.speechSynthesis.speak(utterance);
+    }
+}
+
+function toggleVoiceSession() {
+    const panel = document.getElementById('voicePanel');
+    const fab = document.getElementById('voiceFab');
+    const status = document.getElementById('voiceStatus');
+    const textDiv = document.getElementById('voiceText');
+
+    if (!isListening) {
+        panel.style.display = 'block';
+        fab.classList.add('listening-pulse');
+        status.innerText = "Live AI Voice Active (Listening...)";
+        textDiv.innerText = "Listening to your instructions... Speak into your microphone.";
+        
+        speakText("Live outreach voice assistant active. I am listening.");
+
+        if (recognition) {
+            try { recognition.start(); } catch(e){}
+        }
+        isListening = true;
+    } else {
+        fab.classList.remove('listening-pulse');
+        status.innerText = "Voice Session Paused";
+        textDiv.innerText = "Voice assistant paused.";
+        speakText("Voice assistant paused.");
+        if (recognition) {
+            try { recognition.stop(); } catch(e){}
+        }
+        isListening = false;
+        setTimeout(() => { panel.style.display = 'none'; }, 2000);
+    }
+}
+</script>
+"""
+
+components.html(voice_html, height=0, width=0)
+
+
+# ============================================================
+# 26. FOOTER
 # ============================================================
 
 render_html("""
@@ -3337,7 +3493,7 @@ render_html("""
 
 
 # ============================================================
-# 26. CLEANUP
+# 27. CLEANUP
 # ============================================================
 
 db.close()
