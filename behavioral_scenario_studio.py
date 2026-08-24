@@ -569,6 +569,19 @@ class Survey(Base):
     )
 
 
+class RapidStateLog(Base):
+    __tablename__ = "rapid_state_logs"
+
+    id = Column(String, primary_key=True)
+    event_id = Column(String, ForeignKey("events.id"), nullable=False)
+    participant_code = Column(String, nullable=False)
+    timestamp = Column(DateTime, nullable=False)
+    baseline_level = Column(String, nullable=False)
+    current_state = Column(String, nullable=False)
+
+    event = relationship("Event")
+
+
 def db_session():
     return SessionLocal()
 
@@ -1536,6 +1549,7 @@ with header_col3:
         "Experience Designer",
         "Live Copilot",
         "Outcome Predictor",
+        "Scientific Reactions",
         "Impact Observatory",
         "Counterfactual Lab",
         "Methodology",
@@ -1961,6 +1975,70 @@ elif page == "Live Copilot":
 
         event = event_map[chosen_name]
 
+        # -----------------------------------------------------------------
+        # RAPID PARTICIPANT STATE LOGGER
+        # -----------------------------------------------------------------
+        st.markdown("---")
+        render_html('<div class="section-heading">Rapid Participant State Logger</div>')
+        render_html('<div class="small-note" style="margin-bottom:15px;">One-click logging for rapid visual analysis. Each click automatically registers as a new participant.</div>')
+
+        rc1, rc2 = st.columns(2)
+        baseline_opts = [
+            "Calm / Receptive",
+            "Neutral / Unengaged",
+            "Low Energy / Fatigued",
+            "Distracted / Scatterbrained",
+            "Anxious / Stressed",
+            "High Energy / Excited"
+        ]
+        state_opts = [
+            "Awe / Wonder",
+            "Deep Focus / Flow",
+            "Curiosity / Inquisitive",
+            "Epiphany / Sudden Understanding",
+            "Cognitive Overload / Confusion",
+            "Disengagement / Boredom",
+            "Stress / Frustration",
+            "Relaxation / Comfort"
+        ]
+
+        with rc1:
+            rapid_baseline = st.radio("Baseline Level", baseline_opts, key="rapid_base")
+        with rc2:
+            rapid_state = st.radio("State of Mind / Reaction", state_opts, key="rapid_state")
+
+        if st.button("Log as New Participant", type="primary", use_container_width=True):
+            new_log = RapidStateLog(
+                id=str(uuid.uuid4()),
+                event_id=event.id,
+                participant_code=f"RP-{uuid.uuid4().hex[:6].upper()}",
+                timestamp=utc_now(),
+                baseline_level=rapid_baseline,
+                current_state=rapid_state
+            )
+            db.add(new_log)
+            db.commit()
+            st.toast("State logged successfully for new participant.")
+            st.rerun()
+
+        recent_rapid_logs = db.query(RapidStateLog).filter(RapidStateLog.event_id == event.id).order_by(RapidStateLog.timestamp.desc()).limit(10).all()
+        if recent_rapid_logs:
+            st.markdown("**Recent Rapid Logs**")
+            for rlog in recent_rapid_logs:
+                c_time, c_part, c_base, c_state, c_del = st.columns([1.5, 1.5, 2.5, 2.5, 1])
+                c_time.caption(rlog.timestamp.strftime("%H:%M:%S UTC"))
+                c_part.caption(rlog.participant_code)
+                c_base.caption(rlog.baseline_level)
+                c_state.caption(rlog.current_state)
+                if c_del.button("Delete", key=f"del_rlog_{rlog.id}", help="Delete this log"):
+                    db.delete(rlog)
+                    db.commit()
+                    st.toast(f"Log {rlog.participant_code} deleted.")
+                    st.rerun()
+
+        st.markdown("---")
+        # -----------------------------------------------------------------
+
         if (
             st.session_state.active_event_id
             != event.id
@@ -2270,6 +2348,65 @@ elif page == "Live Copilot":
                 st.session_state.last_recommendation = None
 
                 st.rerun()
+
+
+# ============================================================
+# 20.5 SCIENTIFIC REACTIONS (NEW PAGE)
+# ============================================================
+
+elif page == "Scientific Reactions":
+
+    render_html('<div class="section-heading">Scientific Reaction Analysis</div>')
+    render_html('<div class="small-note" style="margin-bottom:15px;">Visualizing accurate, logical, and practical scientific reactions (focus, stress, awe) logged during the experience.</div>')
+
+    events = db.query(Event).order_by(Event.date.desc()).all()
+    
+    if not events:
+        st.info("No experiences available.")
+    else:
+        event_map = {f"{e.name} ({e.date.strftime('%Y-%m-%d %H:%M')})": e for e in events}
+        selected_name = st.selectbox("Select Experience", list(event_map.keys()), key="sci_reac_event")
+        event = event_map[selected_name]
+
+        logs = db.query(RapidStateLog).filter(RapidStateLog.event_id == event.id).order_by(RapidStateLog.timestamp.asc()).all()
+
+        if not logs:
+            st.info("No rapid reaction data logged for this event yet. Use the Rapid State Logger in the Live Copilot page.")
+        else:
+            df_logs = pd.DataFrame([{
+                "timestamp": l.timestamp,
+                "participant": l.participant_code,
+                "baseline": l.baseline_level,
+                "reaction": l.current_state
+            } for l in logs])
+            
+            df_logs['timestamp'] = pd.to_datetime(df_logs['timestamp'])
+
+            render_html(f"""
+            <div class="metric-card">
+                <div class="metric-label">Total Rapid Logs</div>
+                <div class="metric-value">{len(logs)}</div>
+            </div>
+            """)
+
+            c1, c2 = st.columns(2)
+            with c1:
+                render_html('<div class="section-heading">State of Mind / Reaction Distribution</div>')
+                reaction_counts = df_logs['reaction'].value_counts()
+                st.bar_chart(reaction_counts, color="#5b8cff")
+
+            with c2:
+                render_html('<div class="section-heading">Baseline Level Distribution</div>')
+                baseline_counts = df_logs['baseline'].value_counts()
+                st.bar_chart(baseline_counts, color="#a1a1aa")
+
+            render_html('<div class="section-heading">Reaction Timeline</div>')
+            df_logs['time_minute'] = df_logs['timestamp'].dt.floor('min')
+            timeline_df = df_logs.groupby(['time_minute', 'reaction']).size().unstack(fill_value=0)
+            st.line_chart(timeline_df)
+
+            render_html('<div class="section-heading">Raw Log Data</div>')
+            st.dataframe(df_logs, use_container_width=True)
 
 
 # ============================================================
