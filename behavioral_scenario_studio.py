@@ -47,6 +47,7 @@ from typing import List, Literal, Optional, Dict, Any
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from sqlalchemy import (
     create_engine,
@@ -708,6 +709,12 @@ class OutcomePrediction(BaseModel):
     predicted_curiosity_shift: str
     predicted_understanding_shift: str
     predicted_engagement_rate: str
+    
+    predicted_focus_level: str
+    predicted_stress_level: str
+    predicted_awe_index: str
+    predicted_cognitive_load: str
+    
     overall_outcome_narrative: str
     risk_factors: List[str] = Field(min_length=1, max_length=5)
     success_amplifiers: List[str] = Field(min_length=1, max_length=5)
@@ -1478,7 +1485,9 @@ SITUATIONAL CONTEXT: {situation_info}
 
 Based on these parameters, predict the likely outcomes and metrics for this outreach event.
 Be realistic, factoring in the environmental friction and the specific crowd dynamics.
-Provide synthetic estimates for curiosity shift, understanding shift, and engagement rate.
+Provide synthetic estimates for curiosity shift, understanding shift, engagement rate, 
+predicted focus level, predicted stress level, awe index, and cognitive load.
+Make the scientific-sounding predicted effects accurate and realistic based on the context.
 List clear risk factors and practical ways to amplify success on the ground.
 """
     return run_gemini(
@@ -1926,6 +1935,37 @@ elif page == "Outcome Predictor":
                 </div>
                 """)
 
+            render_html('<div class="section-heading">Scientific-Sounding Predicted Effects</div>')
+            s1, s2, s3, s4 = st.columns(4)
+            with s1:
+                render_html(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Focus Level</div>
+                    <div class="metric-value" style="font-size:1.2rem; color: var(--accent);">{clean_text(p['predicted_focus_level'])}</div>
+                </div>
+                """)
+            with s2:
+                render_html(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Stress Level</div>
+                    <div class="metric-value" style="font-size:1.2rem; color: var(--warning);">{clean_text(p['predicted_stress_level'])}</div>
+                </div>
+                """)
+            with s3:
+                render_html(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Awe Index</div>
+                    <div class="metric-value" style="font-size:1.2rem; color: var(--success);">{clean_text(p['predicted_awe_index'])}</div>
+                </div>
+                """)
+            with s4:
+                render_html(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Cognitive Load</div>
+                    <div class="metric-value" style="font-size:1.2rem; color: var(--danger);">{clean_text(p['predicted_cognitive_load'])}</div>
+                </div>
+                """)
+
             render_html('<div class="section-heading">Outcome Narrative</div>')
             render_html(f"""
             <div class="premium-card">
@@ -2142,6 +2182,33 @@ elif page == "Live Copilot":
             if preference != (interaction.stated_preference or ""):
                 interaction.stated_preference = preference
                 db.commit()
+                
+            render_html('<div class="section-heading">Voice Copilot: Listen & Instruct</div>')
+            render_html('<div class="small-note" style="margin-bottom:15px;">Dictate a custom observation accurately via voice. The AI copilot will also speak out new recommendations.</div>')
+            
+            audio_val = st.audio_input("Dictate an observation")
+            if audio_val is not None:
+                current_audio_hash = hash(audio_val.getvalue())
+                if st.session_state.get("last_audio_hash") != current_audio_hash:
+                    st.session_state["last_audio_hash"] = current_audio_hash
+                    
+                    with st.spinner("Transcribing voice observation..."):
+                        try:
+                            prompt_text = "Transcribe the following spoken observation accurately. Return ONLY the transcription text, nothing else."
+                            response = client.models.generate_content(
+                                model=MODEL_FLASH,
+                                contents=[
+                                    types.Part.from_bytes(data=audio_val.getvalue(), mime_type="audio/wav"),
+                                    prompt_text
+                                ]
+                            )
+                            transcription = response.text.strip()
+                            if transcription:
+                                log_observation(db, interaction.id, "Voice Custom", transcription, "OBSERVED")
+                                st.toast(f"Voice observation logged: {transcription}")
+                                st.rerun()
+                        except Exception as e:
+                            st.error(f"Voice transcription failed: {e}")
 
             render_html('<div class="section-heading">Quick Observations</div>')
 
@@ -2259,6 +2326,25 @@ elif page == "Live Copilot":
                 recommendation = (
                     st.session_state.last_recommendation
                 )
+                
+                if "spoken_recommendation" not in st.session_state:
+                    st.session_state.spoken_recommendation = ""
+                
+                rec_action = recommendation["recommended_action"]
+                if st.session_state.spoken_recommendation != rec_action:
+                    st.session_state.spoken_recommendation = rec_action
+                    safe_speech = rec_action.replace('"', '\\"').replace('\n', ' ')
+                    js_code = f"""
+                    <script>
+                        const synth = window.speechSynthesis;
+                        const utterThis = new SpeechSynthesisUtterance("{safe_speech}");
+                        utterThis.lang = 'en-US';
+                        utterThis.rate = 0.95;
+                        utterThis.pitch = 1.0;
+                        synth.speak(utterThis);
+                    </script>
+                    """
+                    components.html(js_code, height=0)
 
                 render_html(f"""
                 <div class="premium-card"
