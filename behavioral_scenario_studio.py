@@ -74,7 +74,7 @@ from google.genai import types
 # ============================================================
 
 APP_TITLE = "Outreach Intelligence Lab"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.1"
 
 # Real, currently existing Gemini endpoints preserved strictly
 MODEL_FLASH = "gemini-3.6-flash"
@@ -110,7 +110,6 @@ if "user_session_token" not in st.session_state:
         st.session_state["user_session_token"] = new_token
         st.query_params["session_id"] = new_token
 elif "session_id" not in st.query_params:
-    # Reinforce the URL parameter if it gets dropped
     st.query_params["session_id"] = st.session_state["user_session_token"]
 
 USER_SESSION_TOKEN = st.session_state["user_session_token"]
@@ -418,6 +417,19 @@ hr {
     border-color: var(--border-soft) !important;
 }
 
+/* Ensure Floating AI Voice Iframe Container Stays Fixed on Screen Always */
+iframe[title="streamlit_components.v1.html"],
+iframe[srcdoc*="voice-fab"] {
+    position: fixed !important;
+    bottom: 24px !important;
+    right: 24px !important;
+    width: 340px !important;
+    height: 270px !important;
+    z-index: 999999 !important;
+    border: none !important;
+    background: transparent !important;
+}
+
 </style>
 """
 
@@ -561,6 +573,7 @@ class RapidStateLog(Base):
     __tablename__ = "rapid_state_logs"
 
     id = Column(String, primary_key=True)
+    session_token = Column(String, nullable=False, default="global")
     event_id = Column(String, ForeignKey("events.id"), nullable=False)
     participant_code = Column(String, nullable=False)
     timestamp = Column(DateTime, nullable=False)
@@ -572,10 +585,17 @@ class RapidStateLog(Base):
 
 Base.metadata.create_all(bind=engine)
 
-# Migration helper for session_token column
+# Migration helpers for database columns
 try:
     with engine.connect() as conn:
         conn.execute(text("ALTER TABLE events ADD COLUMN session_token VARCHAR DEFAULT 'global'"))
+        conn.commit()
+except Exception:
+    pass
+
+try:
+    with engine.connect() as conn:
+        conn.execute(text("ALTER TABLE rapid_state_logs ADD COLUMN session_token VARCHAR DEFAULT 'global'"))
         conn.commit()
 except Exception:
     pass
@@ -857,7 +877,7 @@ Prefer:
 
 
 # ============================================================
-# 8. SESSION STATE INIT
+# 8. SESSION STATE INIT & RESTORE
 # ============================================================
 
 DEFAULT_STATE = {
@@ -873,6 +893,29 @@ DEFAULT_STATE = {
 for key, value in DEFAULT_STATE.items():
     if key not in st.session_state:
         st.session_state[key] = value
+
+db = db_session()
+
+# Restore user active session workspace context automatically from database on refresh
+if st.session_state.active_event_id is None:
+    latest_event = (
+        db.query(Event)
+        .filter(Event.session_token == USER_SESSION_TOKEN)
+        .order_by(Event.date.desc())
+        .first()
+    )
+    if latest_event:
+        st.session_state.active_event_id = latest_event.id
+
+if st.session_state.active_event_id and st.session_state.active_interaction_id is None:
+    latest_interaction = (
+        db.query(Interaction)
+        .filter(Interaction.event_id == st.session_state.active_event_id)
+        .order_by(Interaction.started_at.desc())
+        .first()
+    )
+    if latest_interaction:
+        st.session_state.active_interaction_id = latest_interaction.id
 
 
 # ============================================================
@@ -1589,14 +1632,7 @@ if client is None:
 
 
 # ============================================================
-# 17. DATABASE INSTANCE
-# ============================================================
-
-db = db_session()
-
-
-# ============================================================
-# 18. EXPERIENCE DESIGNER
+# 17. EXPERIENCE DESIGNER
 # ============================================================
 
 if page == "Experience Designer":
@@ -1837,7 +1873,7 @@ Participant autonomy: {optional_choice}
 
 
 # ============================================================
-# 19. OUTCOME PREDICTOR
+# 18. OUTCOME PREDICTOR
 # ============================================================
 
 elif page == "Outcome Predictor":
@@ -2005,7 +2041,7 @@ elif page == "Outcome Predictor":
 
 
 # ============================================================
-# 20. LIVE COPILOT
+# 19. LIVE COPILOT
 # ============================================================
 
 elif page == "Live Copilot":
@@ -2073,6 +2109,7 @@ elif page == "Live Copilot":
         if st.button("Log as New Participant", type="primary", use_container_width=True):
             new_log = RapidStateLog(
                 id=str(uuid.uuid4()),
+                session_token=USER_SESSION_TOKEN,
                 event_id=event.id,
                 participant_code=f"RP-{uuid.uuid4().hex[:6].upper()}",
                 timestamp=utc_now(),
@@ -2084,7 +2121,11 @@ elif page == "Live Copilot":
             st.toast("State logged successfully for new participant.")
             st.rerun()
 
-        recent_rapid_logs = db.query(RapidStateLog).filter(RapidStateLog.event_id == event.id).order_by(RapidStateLog.timestamp.desc()).limit(10).all()
+        recent_rapid_logs = db.query(RapidStateLog).filter(
+            RapidStateLog.event_id == event.id,
+            RapidStateLog.session_token == USER_SESSION_TOKEN
+        ).order_by(RapidStateLog.timestamp.desc()).limit(10).all()
+
         if recent_rapid_logs:
             st.markdown("**Recent Rapid Logs**")
             for rlog in recent_rapid_logs:
@@ -2420,7 +2461,7 @@ elif page == "Live Copilot":
 
 
 # ============================================================
-# 20.5 SCIENTIFIC REACTIONS
+# 20. SCIENTIFIC REACTIONS
 # ============================================================
 
 elif page == "Scientific Reactions":
@@ -2437,7 +2478,10 @@ elif page == "Scientific Reactions":
         selected_name = st.selectbox("Select Experience", list(event_map.keys()), key="sci_reac_event")
         event = event_map[selected_name]
 
-        logs = db.query(RapidStateLog).filter(RapidStateLog.event_id == event.id).order_by(RapidStateLog.timestamp.asc()).all()
+        logs = db.query(RapidStateLog).filter(
+            RapidStateLog.event_id == event.id,
+            RapidStateLog.session_token == USER_SESSION_TOKEN
+        ).order_by(RapidStateLog.timestamp.asc()).all()
 
         if not logs:
             st.info("No rapid reaction data logged for this event yet. Use the Rapid State Logger in the Live Copilot page.")
@@ -3277,114 +3321,230 @@ with st.expander(
 # ============================================================
 
 voice_html = """
+<!DOCTYPE html>
+<html>
+<head>
 <style>
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+body {
+    background: transparent;
+    overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    justify-content: flex-end;
+    padding: 10px;
+}
+
+.voice-container {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 12px;
+}
+
 .voice-fab {
-    position: fixed;
-    bottom: 30px;
-    right: 30px;
-    width: 60px;
-    height: 60px;
+    width: 58px;
+    height: 58px;
     border-radius: 50%;
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
     display: flex;
     align-items: center;
     justify-content: center;
     cursor: pointer;
-    z-index: 999999;
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    position: relative;
+    user-select: none;
 }
 
-/* OFF STATE: Minimalist glassmorphism */
+/* OFF STATE: Ultra-clean dark glassmorphism */
 .voice-fab.off {
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    background: rgba(22, 22, 26, 0.75);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
 }
 .voice-fab.off:hover {
-    background: rgba(255, 255, 255, 0.1);
-    transform: scale(1.05);
+    background: rgba(35, 35, 42, 0.85);
+    border-color: rgba(255, 255, 255, 0.25);
+    transform: scale(1.06);
 }
 .voice-fab.off svg {
-    fill: rgba(255, 255, 255, 0.6);
+    fill: #a1a1aa;
     transition: fill 0.3s ease;
 }
 .voice-fab.off:hover svg {
     fill: #ffffff;
 }
 
-/* ON STATE: Solid white with premium pulse */
+/* Status Indicator Dot on Icon */
+.status-dot {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 2px solid #0b0b0d;
+    transition: background-color 0.3s ease;
+}
+.voice-fab.off .status-dot {
+    background-color: #71717a;
+}
+.voice-fab.on .status-dot {
+    background-color: #4ade80;
+    box-shadow: 0 0 8px #4ade80;
+}
+
+/* ON STATE: High-end glowing white / vivid accent ring */
 .voice-fab.on {
     background: #ffffff;
-    border: 1px solid transparent;
-    box-shadow: 0 0 0 0 rgba(255,255,255,0.7), 0 8px 32px rgba(255,255,255,0.2);
-    animation: premiumPulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-    transform: scale(1.05);
+    border: 1px solid #ffffff;
+    box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.6), 0 10px 30px rgba(91, 140, 255, 0.35);
+    animation: livePulse 2s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+    transform: scale(1.06);
 }
 .voice-fab.on svg {
     fill: #0b0b0d;
 }
 
-@keyframes premiumPulse {
-    0% { box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.4); }
-    70% { box-shadow: 0 0 0 15px rgba(255, 255, 255, 0); }
-    100% { box-shadow: 0 0 0 0 rgba(255, 255, 255, 0); }
+@keyframes livePulse {
+    0% {
+        box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.5), 0 10px 30px rgba(91, 140, 255, 0.35);
+    }
+    70% {
+        box-shadow: 0 0 0 16px rgba(255, 255, 255, 0), 0 10px 30px rgba(91, 140, 255, 0.35);
+    }
+    100% {
+        box-shadow: 0 0 0 0 rgba(255, 255, 255, 0), 0 10px 30px rgba(91, 140, 255, 0.35);
+    }
 }
 
 .voice-fab svg {
-    width: 26px;
-    height: 26px;
+    width: 24px;
+    height: 24px;
 }
 
-.voice-panel {
-    position: fixed;
-    bottom: 105px;
-    right: 30px;
-    width: 320px;
-    background: rgba(17, 17, 20, 0.85);
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 14px;
-    padding: 16px;
-    box-shadow: 0 10px 40px rgba(0,0,0,0.6);
-    z-index: 999999;
+/* Sound Wave Animation (When Active) */
+.wave-bars {
     display: none;
-    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-    color: #f5f5f7;
-    transition: opacity 0.3s ease;
+    align-items: center;
+    gap: 2px;
+    height: 14px;
+    margin-top: 4px;
+}
+.voice-fab.on .wave-bars {
+    display: flex;
+}
+.bar {
+    width: 3px;
+    background: #0b0b0d;
+    border-radius: 2px;
+    animation: wave 1.2s ease-in-out infinite;
+}
+.bar:nth-child(1) { height: 6px; animation-delay: 0.1s; }
+.bar:nth-child(2) { height: 12px; animation-delay: 0.25s; }
+.bar:nth-child(3) { height: 8px; animation-delay: 0.4s; }
+
+@keyframes wave {
+    0%, 100% { transform: scaleY(0.4); }
+    50% { transform: scaleY(1.1); }
 }
 
-.voice-status {
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: #ffffff;
+/* Floating Voice Panel */
+.voice-panel {
+    width: 310px;
+    background: rgba(17, 17, 20, 0.92);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 14px;
+    padding: 14px 16px;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
+    display: none;
+    color: #f5f5f7;
+    transition: opacity 0.3s ease, transform 0.3s ease;
+}
+.voice-panel.visible {
+    display: block;
+}
+
+.panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
     margin-bottom: 8px;
+}
+
+.voice-status-title {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.09em;
     font-weight: 600;
+    color: #a1a1aa;
+}
+
+.badge-state {
+    font-size: 0.68rem;
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+.badge-off {
+    background: rgba(255,255,255,0.06);
+    color: #71717a;
+    border: 1px solid rgba(255,255,255,0.08);
+}
+.badge-on {
+    background: rgba(74, 222, 128, 0.12);
+    color: #4ade80;
+    border: 1px solid rgba(74, 222, 128, 0.25);
 }
 
 .voice-text {
-    font-size: 0.9rem;
-    color: #a1a1aa;
-    min-height: 50px;
-    max-height: 120px;
+    font-size: 0.86rem;
+    color: #d4d4d8;
+    min-height: 44px;
+    max-height: 100px;
     overflow-y: auto;
-    margin-bottom: 12px;
     line-height: 1.5;
+    word-break: break-word;
 }
 </style>
+</head>
+<body>
 
-<div id="voicePanel" class="voice-panel">
-    <div id="voiceStatus" class="voice-status">AI Live Voice Assistant</div>
-    <div id="voiceText" class="voice-text">Click the floating microphone icon to start real-time listening...</div>
-</div>
+<div class="voice-container">
+    <div id="voicePanel" class="voice-panel">
+        <div class="panel-header">
+            <span class="voice-status-title">Live AI Voice Copilot</span>
+            <span id="voiceBadge" class="badge-state badge-off">OFF</span>
+        </div>
+        <div id="voiceText" class="voice-text">Tap the floating microphone button to activate real-time AI voice copilot...</div>
+    </div>
 
-<div id="voiceFab" class="voice-fab off" onclick="toggleVoiceSession()">
-    <svg viewBox="0 0 24 24">
-        <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
-        <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
-    </svg>
+    <div id="voiceFab" class="voice-fab off" onclick="toggleVoiceSession()">
+        <div class="status-dot"></div>
+        <svg viewBox="0 0 24 24">
+            <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
+            <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+        </svg>
+        <div class="wave-bars">
+            <div class="bar"></div>
+            <div class="bar"></div>
+            <div class="bar"></div>
+        </div>
+    </div>
 </div>
 
 <script>
@@ -3402,11 +3562,11 @@ if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
         for (let i = event.resultIndex; i < event.results.length; ++i) {
             transcript += event.results[i][0].transcript;
         }
-        document.getElementById('voiceText').innerText = "You: " + transcript;
+        document.getElementById('voiceText').innerText = "Listening: " + transcript;
     };
 
     recognition.onerror = function(event) {
-        document.getElementById('voiceStatus').innerText = "Listening Error";
+        document.getElementById('voiceText').innerText = "Microphone active. Awaiting voice input...";
     };
 }
 
@@ -3423,17 +3583,18 @@ function speakText(text) {
 function toggleVoiceSession() {
     const panel = document.getElementById('voicePanel');
     const fab = document.getElementById('voiceFab');
-    const status = document.getElementById('voiceStatus');
+    const badge = document.getElementById('voiceBadge');
     const textDiv = document.getElementById('voiceText');
 
     if (!isListening) {
-        panel.style.display = 'block';
+        panel.classList.add('visible');
         fab.classList.remove('off');
         fab.classList.add('on');
-        status.innerText = "Listening...";
-        textDiv.innerText = "Listening to your instructions... Speak into your microphone.";
+        badge.className = "badge-state badge-on";
+        badge.innerText = "LIVE ON";
+        textDiv.innerText = "Live AI Voice Copilot active. Speak directly to guide your outreach session...";
         
-        speakText("Live outreach voice assistant active. I am listening.");
+        speakText("Live outreach voice model connected and active. I am listening.");
 
         if (recognition) {
             try { recognition.start(); } catch(e){}
@@ -3442,20 +3603,23 @@ function toggleVoiceSession() {
     } else {
         fab.classList.remove('on');
         fab.classList.add('off');
-        status.innerText = "Voice Session Paused";
+        badge.className = "badge-state badge-off";
+        badge.innerText = "OFF";
         textDiv.innerText = "Voice assistant paused.";
-        speakText("Voice assistant paused.");
+        speakText("Voice assistant muted.");
         if (recognition) {
             try { recognition.stop(); } catch(e){}
         }
         isListening = false;
-        setTimeout(() => { panel.style.display = 'none'; }, 2000);
+        setTimeout(() => { panel.classList.remove('visible'); }, 2500);
     }
 }
 </script>
+</body>
+</html>
 """
 
-components.html(voice_html, height=0, width=0)
+components.html(voice_html, height=270, width=340)
 
 
 # ============================================================
