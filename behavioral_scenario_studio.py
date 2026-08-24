@@ -423,8 +423,8 @@ iframe[srcdoc*="voice-fab"] {
     position: fixed !important;
     bottom: 24px !important;
     right: 24px !important;
-    width: 340px !important;
-    height: 270px !important;
+    width: 360px !important;
+    height: 310px !important;
     z-index: 999999 !important;
     border: none !important;
     background: transparent !important;
@@ -1588,7 +1588,30 @@ with header_col1:
 
 with header_col2:
     if st.button("Clean Memory", use_container_width=True):
+        # Explicitly clear only this user's persistent database entries
+        user_events = db.query(Event).filter(Event.session_token == USER_SESSION_TOKEN).all()
+        user_event_ids = [e.id for e in user_events]
+        
+        if user_event_ids:
+            user_interactions = db.query(Interaction).filter(Interaction.event_id.in_(user_event_ids)).all()
+            user_int_ids = [i.id for i in user_interactions]
+            
+            if user_int_ids:
+                db.query(Observation).filter(Observation.interaction_id.in_(user_int_ids)).delete(synchronize_session=False)
+                db.query(Survey).filter(Survey.interaction_id.in_(user_int_ids)).delete(synchronize_session=False)
+                db.query(Interaction).filter(Interaction.event_id.in_(user_event_ids)).delete(synchronize_session=False)
+            
+            db.query(Event).filter(Event.session_token == USER_SESSION_TOKEN).delete(synchronize_session=False)
+
+        db.query(RapidStateLog).filter(RapidStateLog.session_token == USER_SESSION_TOKEN).delete(synchronize_session=False)
+        db.commit()
+
         st.session_state.clear()
+        
+        # Generate clean new session token
+        fresh_token = f"user_{uuid.uuid4().hex[:12]}"
+        st.query_params["session_id"] = fresh_token
+        st.session_state["user_session_token"] = fresh_token
         st.rerun()
 
     render_html(f"""
@@ -3317,20 +3340,20 @@ with st.expander(
 
 
 # ============================================================
-# 25. FLOATING LIVE AI VOICE WIDGET (HTML / JS / WEB SPEECH)
+# 25. FLOATING LIVE AI VOICE WIDGET (INTERACTIVE GEMINI AI & AMERICAN MALE VOICE)
 # ============================================================
 
-voice_html = """
+voice_html = f"""
 <!DOCTYPE html>
 <html>
 <head>
 <style>
-* {
+* {{
     box-sizing: border-box;
     margin: 0;
     padding: 0;
-}
-body {
+}}
+body {{
     background: transparent;
     overflow: hidden;
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
@@ -3341,17 +3364,17 @@ body {
     align-items: flex-end;
     justify-content: flex-end;
     padding: 10px;
-}
+}}
 
-.voice-container {
+.voice-container {{
     position: relative;
     display: flex;
     flex-direction: column;
     align-items: flex-end;
     gap: 12px;
-}
+}}
 
-.voice-fab {
+.voice-fab {{
     width: 58px;
     height: 58px;
     border-radius: 50%;
@@ -3362,31 +3385,31 @@ body {
     transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
     position: relative;
     user-select: none;
-}
+}}
 
 /* OFF STATE: Ultra-clean dark glassmorphism */
-.voice-fab.off {
-    background: rgba(22, 22, 26, 0.75);
+.voice-fab.off {{
+    background: rgba(22, 22, 26, 0.85);
     backdrop-filter: blur(16px);
     -webkit-backdrop-filter: blur(16px);
     border: 1px solid rgba(255, 255, 255, 0.12);
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-}
-.voice-fab.off:hover {
-    background: rgba(35, 35, 42, 0.85);
+}}
+.voice-fab.off:hover {{
+    background: rgba(35, 35, 42, 0.95);
     border-color: rgba(255, 255, 255, 0.25);
     transform: scale(1.06);
-}
-.voice-fab.off svg {
+}}
+.voice-fab.off svg {{
     fill: #a1a1aa;
     transition: fill 0.3s ease;
-}
-.voice-fab.off:hover svg {
+}}
+.voice-fab.off:hover svg {{
     fill: #ffffff;
-}
+}}
 
 /* Status Indicator Dot on Icon */
-.status-dot {
+.status-dot {{
     position: absolute;
     top: 2px;
     right: 2px;
@@ -3395,131 +3418,131 @@ body {
     border-radius: 50%;
     border: 2px solid #0b0b0d;
     transition: background-color 0.3s ease;
-}
-.voice-fab.off .status-dot {
+}}
+.voice-fab.off .status-dot {{
     background-color: #71717a;
-}
-.voice-fab.on .status-dot {
+}}
+.voice-fab.on .status-dot {{
     background-color: #4ade80;
     box-shadow: 0 0 8px #4ade80;
-}
+}}
 
 /* ON STATE: High-end glowing white / vivid accent ring */
-.voice-fab.on {
+.voice-fab.on {{
     background: #ffffff;
     border: 1px solid #ffffff;
     box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.6), 0 10px 30px rgba(91, 140, 255, 0.35);
     animation: livePulse 2s cubic-bezier(0.16, 1, 0.3, 1) infinite;
     transform: scale(1.06);
-}
-.voice-fab.on svg {
+}}
+.voice-fab.on svg {{
     fill: #0b0b0d;
-}
+}}
 
-@keyframes livePulse {
-    0% {
+@keyframes livePulse {{
+    0% {{
         box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.5), 0 10px 30px rgba(91, 140, 255, 0.35);
-    }
-    70% {
+    }}
+    70% {{
         box-shadow: 0 0 0 16px rgba(255, 255, 255, 0), 0 10px 30px rgba(91, 140, 255, 0.35);
-    }
-    100% {
+    }}
+    100% {{
         box-shadow: 0 0 0 0 rgba(255, 255, 255, 0), 0 10px 30px rgba(91, 140, 255, 0.35);
-    }
-}
+    }}
+}}
 
-.voice-fab svg {
+.voice-fab svg {{
     width: 24px;
     height: 24px;
-}
+}}
 
 /* Sound Wave Animation (When Active) */
-.wave-bars {
+.wave-bars {{
     display: none;
     align-items: center;
     gap: 2px;
     height: 14px;
     margin-top: 4px;
-}
-.voice-fab.on .wave-bars {
+}}
+.voice-fab.on .wave-bars {{
     display: flex;
-}
-.bar {
+}}
+.bar {{
     width: 3px;
     background: #0b0b0d;
     border-radius: 2px;
     animation: wave 1.2s ease-in-out infinite;
-}
-.bar:nth-child(1) { height: 6px; animation-delay: 0.1s; }
-.bar:nth-child(2) { height: 12px; animation-delay: 0.25s; }
-.bar:nth-child(3) { height: 8px; animation-delay: 0.4s; }
+}}
+.bar:nth-child(1) {{ height: 6px; animation-delay: 0.1s; }}
+.bar:nth-child(2) {{ height: 12px; animation-delay: 0.25s; }}
+.bar:nth-child(3) {{ height: 8px; animation-delay: 0.4s; }}
 
-@keyframes wave {
-    0%, 100% { transform: scaleY(0.4); }
-    50% { transform: scaleY(1.1); }
-}
+@keyframes wave {{
+    0%, 100% {{ transform: scaleY(0.4); }}
+    50% {{ transform: scaleY(1.1); }}
+}}
 
 /* Floating Voice Panel */
-.voice-panel {
-    width: 310px;
-    background: rgba(17, 17, 20, 0.92);
+.voice-panel {{
+    width: 330px;
+    background: rgba(17, 17, 20, 0.94);
     backdrop-filter: blur(20px);
     -webkit-backdrop-filter: blur(20px);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 14px;
-    padding: 14px 16px;
+    padding: 16px 18px;
     box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
     display: none;
     color: #f5f5f7;
     transition: opacity 0.3s ease, transform 0.3s ease;
-}
-.voice-panel.visible {
+}}
+.voice-panel.visible {{
     display: block;
-}
+}}
 
-.panel-header {
+.panel-header {{
     display: flex;
     align-items: center;
     justify-content: space-between;
     margin-bottom: 8px;
-}
+}}
 
-.voice-status-title {
+.voice-status-title {{
     font-size: 0.72rem;
     text-transform: uppercase;
     letter-spacing: 0.09em;
     font-weight: 600;
     color: #a1a1aa;
-}
+}}
 
-.badge-state {
+.badge-state {{
     font-size: 0.68rem;
     padding: 2px 7px;
     border-radius: 4px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-}
-.badge-off {
+}}
+.badge-off {{
     background: rgba(255,255,255,0.06);
     color: #71717a;
     border: 1px solid rgba(255,255,255,0.08);
-}
-.badge-on {
+}}
+.badge-on {{
     background: rgba(74, 222, 128, 0.12);
     color: #4ade80;
     border: 1px solid rgba(74, 222, 128, 0.25);
-}
+}}
 
-.voice-text {
+.voice-text {{
     font-size: 0.86rem;
     color: #d4d4d8;
-    min-height: 44px;
-    max-height: 100px;
+    min-height: 52px;
+    max-height: 120px;
     overflow-y: auto;
     line-height: 1.5;
     word-break: break-word;
-}
+}}
 </style>
 </head>
 <body>
@@ -3550,76 +3573,188 @@ body {
 <script>
 let isListening = false;
 let recognition = null;
+let currentVoices = [];
 
-if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
+function loadVoices() {{
+    if ('speechSynthesis' in window) {{
+        currentVoices = window.speechSynthesis.getVoices();
+    }}
+}}
 
-    recognition.onresult = function(event) {
-        let transcript = '';
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-            transcript += event.results[i][0].transcript;
-        }
-        document.getElementById('voiceText').innerText = "Listening: " + transcript;
-    };
+if ('speechSynthesis' in window) {{
+    loadVoices();
+    window.speechSynthesis.onvoiceschanged = loadVoices;
+}}
 
-    recognition.onerror = function(event) {
-        document.getElementById('voiceText').innerText = "Microphone active. Awaiting voice input...";
-    };
-}
+function getAmericanMaleVoice() {{
+    if (!currentVoices || currentVoices.length === 0) {{
+        loadVoices();
+    }}
+    // Strict priority for American Male Voices
+    let maleVoice = currentVoices.find(v => 
+        (v.lang === 'en-US' || v.lang === 'en_US') && 
+        (v.name.toLowerCase().includes('david') || 
+         v.name.toLowerCase().includes('mark') || 
+         v.name.toLowerCase().includes('george') || 
+         v.name.toLowerCase().includes('guy') || 
+         v.name.toLowerCase().includes('male') || 
+         v.name.toLowerCase().includes('natural') || 
+         v.name.toLowerCase().includes('google us english'))
+    );
+    
+    if (!maleVoice) {{
+        maleVoice = currentVoices.find(v => v.lang === 'en-US' || v.lang === 'en_US');
+    }}
+    return maleVoice;
+}}
 
-function speakText(text) {
-    if ('speechSynthesis' in window) {
+function speakText(text, onComplete) {{
+    if ('speechSynthesis' in window) {{
         window.speechSynthesis.cancel();
         const utterance = new SpeechSynthesisUtterance(text);
+        
+        const maleVoice = getAmericanMaleVoice();
+        if (maleVoice) {{
+            utterance.voice = maleVoice;
+        }}
+        utterance.lang = 'en-US';
+        utterance.pitch = 0.92; // Natural deep American male pitch
         utterance.rate = 1.0;
-        utterance.pitch = 1.0;
-        window.speechSynthesis.speak(utterance);
-    }
-}
 
-function toggleVoiceSession() {
+        utterance.onend = function() {{
+            if (onComplete) onComplete();
+        }};
+        
+        window.speechSynthesis.speak(utterance);
+    }} else if (onComplete) {{
+        onComplete();
+    }}
+}}
+
+async function queryGeminiVoice(userInput) {{
+    const apiKey = "{api_key}";
+    const selectedModel = "{selected_model}";
+    const textDiv = document.getElementById('voiceText');
+    const badge = document.getElementById('voiceBadge');
+
+    if (!apiKey) {{
+        const msg = "Gemini API key is not configured. I heard: " + userInput;
+        textDiv.innerText = msg;
+        speakText(msg);
+        return;
+    }}
+
+    textDiv.innerText = "Analyzing voice prompt...";
+    badge.innerText = "THINKING";
+
+    try {{
+        const response = await fetch(`[https://generativelanguage.googleapis.com/v1beta/models/$](https://generativelanguage.googleapis.com/v1beta/models/$){{selectedModel}}:generateContent?key=${{apiKey}}`, {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }},
+            body: JSON.stringify({{
+                contents: [{{
+                    parts: [{{ text: "You are a live, ultra-concise science outreach voice copilot. Provide a direct, intelligent 1-to-2 sentence answer designed for speech to this prompt: " + userInput }}]
+                }}]
+            }})
+        }});
+
+        const data = await response.json();
+        let reply = "";
+        if (data.candidates && data.candidates[0] && data.candidates[0].content) {{
+            reply = data.candidates[0].content.parts[0].text.trim();
+        }} else {{
+            reply = "I received your observation, but could not generate a response.";
+        }}
+
+        textDiv.innerText = reply;
+        badge.innerText = "SPEAKING";
+        
+        speakText(reply, () => {{
+            if (isListening) {{
+                badge.innerText = "LISTENING";
+                try {{ recognition.start(); }} catch(e){{}}
+            }}
+        }});
+
+    }} catch (err) {{
+        console.error(err);
+        const errText = "I encountered a connection issue processing that prompt.";
+        textDiv.innerText = errText;
+        speakText(errText);
+    }}
+}}
+
+if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {{
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.lang = 'en-US';
+
+    recognition.onresult = function(event) {
+        if (event.results && event.results[0]) {{
+            const transcript = event.results[0][0].transcript;
+            document.getElementById('voiceText').innerText = "You: " + transcript;
+            queryGeminiVoice(transcript);
+        }}
+    }};
+
+    recognition.onerror = function(event) {{
+        if (isListening) {{
+            try {{ recognition.start(); }} catch(e){{}}
+        }}
+    }};
+
+    recognition.onend = function() {{
+        // Auto restart if listening and not speaking
+        if (isListening && !window.speechSynthesis.speaking) {{
+            try {{ recognition.start(); }} catch(e){{}}
+        }}
+    }};
+}}
+
+function toggleVoiceSession() {{
     const panel = document.getElementById('voicePanel');
     const fab = document.getElementById('voiceFab');
     const badge = document.getElementById('voiceBadge');
     const textDiv = document.getElementById('voiceText');
 
-    if (!isListening) {
+    if (!isListening) {{
         panel.classList.add('visible');
         fab.classList.remove('off');
         fab.classList.add('on');
         badge.className = "badge-state badge-on";
-        badge.innerText = "LIVE ON";
-        textDiv.innerText = "Live AI Voice Copilot active. Speak directly to guide your outreach session...";
+        badge.innerText = "LISTENING";
+        textDiv.innerText = "Live American Male AI Voice Copilot active. Speak now...";
         
-        speakText("Live outreach voice model connected and active. I am listening.");
+        speakText("Live outreach voice model connected. How can I assist your session?", () => {{
+            if (recognition) {{
+                try {{ recognition.start(); }} catch(e){{}}
+            }}
+        }});
 
-        if (recognition) {
-            try { recognition.start(); } catch(e){}
-        }
         isListening = true;
-    } else {
+    }} else {{
         fab.classList.remove('on');
         fab.classList.add('off');
         badge.className = "badge-state badge-off";
         badge.innerText = "OFF";
         textDiv.innerText = "Voice assistant paused.";
+        
+        if (recognition) {{
+            try {{ recognition.stop(); }} catch(e){{}}
+        }}
         speakText("Voice assistant muted.");
-        if (recognition) {
-            try { recognition.stop(); } catch(e){}
-        }
         isListening = false;
-        setTimeout(() => { panel.classList.remove('visible'); }, 2500);
-    }
-}
+        setTimeout(() => {{ panel.classList.remove('visible'); }}, 2500);
+    }}
+}}
 </script>
 </body>
 </html>
 """
 
-components.html(voice_html, height=270, width=340)
+components.html(voice_html, height=310, width=360)
 
 
 # ============================================================
