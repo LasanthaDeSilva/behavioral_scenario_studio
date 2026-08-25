@@ -37,12 +37,12 @@ IMPORTANT METHODOLOGICAL PRINCIPLES
 
 import os
 import re
-import json
 import html
 import uuid
 import math
 import sqlite3
 import textwrap
+import json
 from datetime import datetime, timezone
 from typing import List, Literal, Optional, Dict, Any
 
@@ -114,6 +114,29 @@ elif "session_id" not in st.query_params:
     st.query_params["session_id"] = st.session_state["user_session_token"]
 
 USER_SESSION_TOKEN = st.session_state["user_session_token"]
+
+# LocalStorage Browser Integration Bridge to sync session_id reliably
+local_storage_sync_js = f"""
+<script>
+(function() {{
+    const tokenKey = "ninolades_session_token";
+    const currentToken = "{USER_SESSION_TOKEN}";
+    const storedToken = localStorage.getItem(tokenKey);
+    const urlParams = new URLSearchParams(window.location.search);
+    const urlToken = urlParams.get("session_id");
+
+    if (!urlToken && storedToken) {{
+        urlParams.set("session_id", storedToken);
+        window.location.search = urlParams.toString();
+    }} else if (urlToken) {{
+        localStorage.setItem(tokenKey, urlToken);
+    }} else if (currentToken) {{
+        localStorage.setItem(tokenKey, currentToken);
+    }}
+}})();
+</script>
+"""
+components.html(local_storage_sync_js, height=0, width=0)
 
 
 # ============================================================
@@ -584,11 +607,13 @@ class RapidStateLog(Base):
     event = relationship("Event")
 
 
-class SessionCache(Base):
-    __tablename__ = "session_cache"
-    
-    session_token = Column(String, primary_key=True)
-    data = Column(Text, nullable=False, default="{}")
+class UserSetting(Base):
+    __tablename__ = "user_settings"
+
+    id = Column(String, primary_key=True)
+    session_token = Column(String, nullable=False, index=True)
+    key = Column(String, nullable=False)
+    value = Column(Text, nullable=True)
 
 
 Base.metadata.create_all(bind=engine)
@@ -612,6 +637,33 @@ SessionLocal = get_session_factory(engine)
 
 def db_session():
     return SessionLocal()
+
+
+# Helper functions to store/retrieve persistent user setting state across refreshes
+def set_user_setting(db_inst, token: str, key: str, value: Any):
+    val_str = json.dumps(value) if not isinstance(value, str) else value
+    setting = db_inst.query(UserSetting).filter(
+        UserSetting.session_token == token,
+        UserSetting.key == key
+    ).first()
+    if not setting:
+        setting = UserSetting(id=str(uuid.uuid4()), session_token=token, key=key, value=val_str)
+        db_inst.add(setting)
+    else:
+        setting.value = val_str
+    db_inst.commit()
+
+def get_user_setting(db_inst, token: str, key: str, default: Any = None) -> Any:
+    setting = db_inst.query(UserSetting).filter(
+        UserSetting.session_token == token,
+        UserSetting.key == key
+    ).first()
+    if setting and setting.value is not None:
+        try:
+            return json.loads(setting.value)
+        except Exception:
+            return setting.value
+    return default
 
 
 # ============================================================
@@ -888,19 +940,6 @@ Prefer:
 # 8. SESSION STATE INIT & RESTORE
 # ============================================================
 
-db = db_session()
-
-# Restore persistent micro-interaction and details state from UI cache automatically
-cache_record = db.query(SessionCache).filter(SessionCache.session_token == USER_SESSION_TOKEN).first()
-if cache_record and cache_record.data:
-    try:
-        persisted_state = json.loads(cache_record.data)
-        for k, v in persisted_state.items():
-            if k not in st.session_state:
-                st.session_state[k] = v
-    except Exception:
-        pass
-
 DEFAULT_STATE = {
     "active_event_id": None,
     "active_interaction_id": None,
@@ -914,6 +953,14 @@ DEFAULT_STATE = {
 for key, value in DEFAULT_STATE.items():
     if key not in st.session_state:
         st.session_state[key] = value
+
+db = db_session()
+
+# Restore stored session defaults from persistent DB settings if available
+for s_key in DEFAULT_STATE.keys():
+    stored_val = get_user_setting(db, USER_SESSION_TOKEN, f"state_{s_key}")
+    if stored_val is not None and st.session_state[s_key] is None:
+        st.session_state[s_key] = stored_val
 
 # Restore user active session workspace context automatically from database on refresh
 if st.session_state.active_event_id is None:
@@ -1587,7 +1634,8 @@ with header_col1:
     }
     
     if "mem_model_label" not in st.session_state:
-        st.session_state["mem_model_label"] = list(model_options.keys())[0]
+        saved_model = get_user_setting(db, USER_SESSION_TOKEN, "mem_model_label", list(model_options.keys())[0])
+        st.session_state["mem_model_label"] = saved_model
 
     selected_model_label = st.selectbox(
         "Reasoning engine",
@@ -1597,6 +1645,7 @@ with header_col1:
         label_visibility="collapsed"
     )
     
+    set_user_setting(db, USER_SESSION_TOKEN, "mem_model_label", selected_model_label)
     selected_model = model_options[selected_model_label]
 
     render_html("""
@@ -1623,12 +1672,13 @@ with header_col2:
             db.query(Event).filter(Event.session_token == USER_SESSION_TOKEN).delete(synchronize_session=False)
 
         db.query(RapidStateLog).filter(RapidStateLog.session_token == USER_SESSION_TOKEN).delete(synchronize_session=False)
-        
-        # Purge the session UI cache fully
-        db.query(SessionCache).filter(SessionCache.session_token == USER_SESSION_TOKEN).delete(synchronize_session=False)
+        db.query(UserSetting).filter(UserSetting.session_token == USER_SESSION_TOKEN).delete(synchronize_session=False)
         db.commit()
 
         st.session_state.clear()
+        
+        # Clear LocalStorage in Browser via JS
+        components.html("<script>localStorage.removeItem('ninolades_session_token'); localStorage.clear();</script>", height=0, width=0)
         
         # Generate clean new session token
         fresh_token = f"user_{uuid.uuid4().hex[:12]}"
@@ -1654,7 +1704,8 @@ with header_col3:
     ]
     
     if "mem_page" not in st.session_state:
-        st.session_state["mem_page"] = page_opts[0]
+        saved_page = get_user_setting(db, USER_SESSION_TOKEN, "mem_page", page_opts[0])
+        st.session_state["mem_page"] = saved_page
         
     page = st.radio(
         "Workspace",
@@ -1663,6 +1714,8 @@ with header_col3:
         horizontal=True,
         label_visibility="collapsed"
     )
+    
+    set_user_setting(db, USER_SESSION_TOKEN, "mem_page", page)
 
 st.markdown("---")
 
@@ -1676,6 +1729,14 @@ if client is None:
     )
 
 
+# Save persistent key state helper
+def sync_input_setting(key_name, default_val=""):
+    if key_name not in st.session_state:
+        st.session_state[key_name] = get_user_setting(db, USER_SESSION_TOKEN, key_name, default_val)
+    elif st.session_state[key_name] != get_user_setting(db, USER_SESSION_TOKEN, key_name):
+        set_user_setting(db, USER_SESSION_TOKEN, key_name, st.session_state[key_name])
+
+
 # ============================================================
 # 17. EXPERIENCE DESIGNER
 # ============================================================
@@ -1683,6 +1744,14 @@ if client is None:
 if page == "Experience Designer":
 
     render_html('<div class="section-heading">Design an outreach experience</div>')
+
+    sync_input_setting("mem_event_name", "")
+    sync_input_setting("mem_objective", "Curiosity")
+    sync_input_setting("mem_audience", "General public")
+    sync_input_setting("mem_environment", "")
+    sync_input_setting("mem_acoustic", "")
+    sync_input_setting("mem_sensory", "")
+    sync_input_setting("mem_context", "")
 
     left, right = st.columns(2)
 
@@ -1758,20 +1827,17 @@ if page == "Experience Designer":
 
     with design_col1:
         pac_opts = ["Slow and contemplative", "Moderate", "Fast and energetic", "Variable"]
-        if "mem_pacing" not in st.session_state:
-            st.session_state["mem_pacing"] = pac_opts[0]
+        sync_input_setting("mem_pacing", pac_opts[0])
         pacing = st.selectbox("Pacing", pac_opts, key="mem_pacing")
 
     with design_col2:
         style_opts = ["Open observation", "Facilitator-led", "Question-led", "Hands-on", "Story-driven", "Mixed"]
-        if "mem_interaction_style" not in st.session_state:
-            st.session_state["mem_interaction_style"] = style_opts[0]
+        sync_input_setting("mem_interaction_style", style_opts[0])
         interaction_style = st.selectbox("Interaction style", style_opts, key="mem_interaction_style")
 
     with design_col3:
         aut_opts = ["High", "Moderate", "Low"]
-        if "mem_optional_choice" not in st.session_state:
-            st.session_state["mem_optional_choice"] = aut_opts[0]
+        sync_input_setting("mem_optional_choice", aut_opts[0])
         optional_choice = st.selectbox("Participant autonomy", aut_opts, key="mem_optional_choice")
 
     design_data = f"""
@@ -1808,6 +1874,7 @@ Participant autonomy: {optional_choice}
                 )
 
                 st.session_state.active_event_id = event.id
+                set_user_setting(db, USER_SESSION_TOKEN, "state_active_event_id", event.id)
 
                 with st.spinner(
                     "Building engagement model..."
@@ -1823,6 +1890,7 @@ Participant autonomy: {optional_choice}
                 st.session_state.last_forward_model = (
                     model.model_dump()
                 )
+                set_user_setting(db, USER_SESSION_TOKEN, "state_last_forward_model", st.session_state.last_forward_model)
 
                 st.success(
                     "Experience initialized and model generated."
@@ -1941,6 +2009,7 @@ elif page == "Outcome Predictor":
         }
 
         event_keys = list(event_map.keys())
+        sync_input_setting("pred_event_select", event_keys[0])
         selected_name = st.selectbox(
             "Select Experience",
             event_keys,
@@ -1951,18 +2020,23 @@ elif page == "Outcome Predictor":
 
         render_html('<div class="section-heading">Contextual Environment & Crowd Questionnaire</div>')
         
+        sync_input_setting("q_stress", "Moderate Stress")
+        sync_input_setting("q_noise", "Moderate Noise")
+        sync_input_setting("q_duration", "Standard (30-45 mins)")
+        sync_input_setting("q_density", "Medium (Guided Q&A)")
+        sync_input_setting("pred_crowd", "")
+        sync_input_setting("pred_situation", "")
+
         qc1, qc2 = st.columns(2)
         with qc1:
             baseline_stress_q = st.select_slider(
                 "Estimated Baseline Audience Stress Level",
                 options=["Very Low / Relaxed", "Moderate Stress", "High Stress / Overwhelmed"],
-                value="Moderate Stress",
                 key="q_stress"
             )
             noise_sensory_q = st.select_slider(
                 "Ambient Distraction & Sensory Noise Level",
                 options=["Quiet & Controlled", "Moderate Noise", "High Loudness / Busy Crowd"],
-                value="Moderate Noise",
                 key="q_noise"
             )
         with qc2:
@@ -1974,7 +2048,6 @@ elif page == "Outcome Predictor":
             interaction_density_q = st.selectbox(
                 "Interactive Touchpoints Density",
                 ["Low (Passive listening)", "Medium (Guided Q&A)", "High (Hands-on exploration)"],
-                index=1,
                 key="q_density"
             )
 
@@ -2013,6 +2086,7 @@ elif page == "Outcome Predictor":
                             questionnaire_summary
                         )
                         st.session_state.last_prediction = pred.model_dump()
+                        set_user_setting(db, USER_SESSION_TOKEN, "state_last_prediction", st.session_state.last_prediction)
                 except Exception as exc:
                     st.error(f"Prediction failed: {exc}")
 
@@ -2114,6 +2188,7 @@ elif page == "Live Copilot":
         }
 
         event_keys = list(event_map.keys())
+        sync_input_setting("live_copilot_event_select", event_keys[0])
         chosen_name = st.selectbox(
             "Active experience",
             event_keys,
@@ -2145,6 +2220,9 @@ elif page == "Live Copilot":
             "Stress / Frustration",
             "Relaxation / Comfort"
         ]
+
+        sync_input_setting("rapid_base", baseline_opts[0])
+        sync_input_setting("rapid_state", state_opts[0])
 
         with rc1:
             rapid_baseline = st.radio("Baseline Level", baseline_opts, key="rapid_base")
@@ -2192,7 +2270,9 @@ elif page == "Live Copilot":
             != event.id
         ):
             st.session_state.active_event_id = event.id
+            set_user_setting(db, USER_SESSION_TOKEN, "state_active_event_id", event.id)
             st.session_state.active_interaction_id = None
+            set_user_setting(db, USER_SESSION_TOKEN, "state_active_interaction_id", None)
 
         # Auto-recover unfinished interaction upon refresh so micro-interactions are not lost
         if not st.session_state.active_interaction_id:
@@ -2203,6 +2283,7 @@ elif page == "Live Copilot":
             
             if unfinished_interaction:
                 st.session_state.active_interaction_id = unfinished_interaction.id
+                set_user_setting(db, USER_SESSION_TOKEN, "state_active_interaction_id", unfinished_interaction.id)
 
         if not st.session_state.active_interaction_id:
 
@@ -2220,6 +2301,7 @@ elif page == "Live Copilot":
                 st.session_state.active_interaction_id = (
                     interaction.id
                 )
+                set_user_setting(db, USER_SESSION_TOKEN, "state_active_interaction_id", interaction.id)
 
                 st.rerun()
 
@@ -2236,6 +2318,7 @@ elif page == "Live Copilot":
 
             if interaction is None:
                 st.session_state.active_interaction_id = None
+                set_user_setting(db, USER_SESSION_TOKEN, "state_active_interaction_id", None)
                 st.rerun()
 
             render_html(f"""
@@ -2395,6 +2478,7 @@ elif page == "Live Copilot":
                         st.session_state.last_recommendation = (
                             recommendation.model_dump()
                         )
+                        set_user_setting(db, USER_SESSION_TOKEN, "state_last_recommendation", st.session_state.last_recommendation)
 
                     except Exception as exc:
 
@@ -2500,7 +2584,9 @@ elif page == "Live Copilot":
                 db.commit()
 
                 st.session_state.active_interaction_id = None
+                set_user_setting(db, USER_SESSION_TOKEN, "state_active_interaction_id", None)
                 st.session_state.last_recommendation = None
+                set_user_setting(db, USER_SESSION_TOKEN, "state_last_recommendation", None)
 
                 st.rerun()
 
@@ -2520,6 +2606,7 @@ elif page == "Scientific Reactions":
         st.info("No experiences available.")
     else:
         event_map = {f"{e.name} ({e.date.strftime('%Y-%m-%d %H:%M')})": e for e in events}
+        sync_input_setting("sci_reac_event", list(event_map.keys())[0])
         selected_name = st.selectbox("Select Experience", list(event_map.keys()), key="sci_reac_event")
         event = event_map[selected_name]
 
@@ -2607,6 +2694,7 @@ elif page == "Impact Observatory":
         }
 
         event_keys = list(event_map.keys())
+        sync_input_setting("obs_event_select", event_keys[0])
         selected_name = st.selectbox(
             "Experience",
             event_keys,
@@ -2787,6 +2875,7 @@ elif page == "Impact Observatory":
                         st.session_state.last_impact_interpretation = (
                             interpretation.model_dump()
                         )
+                        set_user_setting(db, USER_SESSION_TOKEN, "state_last_impact_interpretation", st.session_state.last_impact_interpretation)
 
                     except Exception as exc:
 
@@ -2889,6 +2978,7 @@ elif page == "Counterfactual Lab":
         }
 
         event_keys = list(event_map.keys())
+        sync_input_setting("cf_event_select", event_keys[0])
         selected_name = st.selectbox(
             "Experience",
             event_keys,
@@ -2911,6 +3001,9 @@ elif page == "Counterfactual Lab":
         </div>
         """)
 
+        sync_input_setting("cf_variable_change", "")
+        sync_input_setting("cf_design_description", event.context or "")
+
         variable_change = st.text_area(
             "What would you change?",
             key="cf_variable_change",
@@ -2920,9 +3013,6 @@ elif page == "Counterfactual Lab":
             ),
             height=100
         )
-
-        if "cf_design_description" not in st.session_state:
-            st.session_state["cf_design_description"] = event.context or ""
             
         design_description = st.text_area(
             "Current design",
@@ -2967,6 +3057,7 @@ elif page == "Counterfactual Lab":
                     st.session_state.last_counterfactual = (
                         cf.model_dump()
                     )
+                    set_user_setting(db, USER_SESSION_TOKEN, "state_last_counterfactual", st.session_state.last_counterfactual)
 
                 except Exception as exc:
 
@@ -3231,6 +3322,7 @@ with st.expander(
         }
 
         event_keys = list(event_map.keys())
+        sync_input_setting("survey_event_select", event_keys[0])
         selected_event_name = st.selectbox(
             "Experience",
             event_keys,
@@ -3266,6 +3358,7 @@ with st.expander(
             }
 
             int_keys = list(interaction_map.keys())
+            sync_input_setting("survey_participant_select", int_keys[0])
             selected_participant = st.selectbox(
                 "Participant interaction",
                 int_keys,
@@ -3282,6 +3375,7 @@ with st.expander(
                 "DELAYED_24H",
                 "DELAYED_7D",
             ]
+            sync_input_setting("survey_timing_select", timing_opts[0])
             survey_timing = st.selectbox(
                 "Measurement point",
                 timing_opts,
@@ -3364,7 +3458,6 @@ with st.expander(
 # ============================================================
 # 25. FLOATING LIVE AI VOICE WIDGET (NATURAL MALE VOICE - NO DISTORTION)
 # ============================================================
-import json
 
 system_prompt_json = json.dumps(AI_SYSTEM)
 
@@ -3740,34 +3833,7 @@ render_html("""
 
 
 # ============================================================
-# 27. CLEANUP & STATE PERSISTENCE
+# 27. CLEANUP
 # ============================================================
-
-# Safely serialize and permanently record the user's active UI layout, models, 
-# and input states against their specific token to survive refreshes.
-state_to_save = {}
-for k, v in st.session_state.items():
-    if k.startswith("FormSubmitter"):
-        continue
-    try:
-        # Strictly ensure only valid JSON-serializable keys pass to DB to avoid crashes
-        json.dumps(v)
-        state_to_save[k] = v
-    except Exception:
-        pass
-
-try:
-    data_str = json.dumps(state_to_save)
-    active_cache_record = db.query(SessionCache).filter(SessionCache.session_token == USER_SESSION_TOKEN).first()
-    
-    if not active_cache_record:
-        new_cache_record = SessionCache(session_token=USER_SESSION_TOKEN, data=data_str)
-        db.add(new_cache_record)
-    else:
-        active_cache_record.data = data_str
-        
-    db.commit()
-except Exception:
-    pass
 
 db.close()
