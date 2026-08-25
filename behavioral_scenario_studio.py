@@ -100,7 +100,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# Ensure each user/browser link has an isolated memory space that survives refresh via LocalStorage
+# 1. Handle explicit manual memory clearance requests first
 if "_trigger_ls_update" in st.session_state:
     fresh_token = st.session_state.pop("_trigger_ls_update")
     st.session_state["ls_synced"] = True
@@ -117,55 +117,54 @@ if "_trigger_ls_update" in st.session_state:
         </script>
     """, height=0, width=0)
 
-elif "ls_synced" not in st.session_state:
-    fallback_token = f"user_{uuid.uuid4().hex[:12]}"
+# 2. Pure-Python initialization block to bypass execution loop race conditions
+else:
+    url_params = st.query_params.to_dict()
+    url_session = url_params.get("session_id")
     
-    # Bi-directional LocalStorage sync: Protects data from URL sharing and restores lost parameters
-    components.html(f"""
-        <script>
-            try {{
-                const urlParams = new URLSearchParams(window.parent.location.search);
-                const urlSession = urlParams.get("session_id");
-                let localSession = window.parent.localStorage.getItem("outreach_session_id");
-                let needsReload = false;
-
-                if (localSession) {{
-                    if (urlSession !== localSession) {{
-                        window.parent.document.body.style.display = "none";
-                        urlParams.set("session_id", localSession);
-                        needsReload = true;
-                    }}
-                }} else {{
-                    // No local memory found. Prevent shared URL hijacking by enforcing a new token.
-                    window.parent.document.body.style.display = "none";
-                    localSession = "{fallback_token}";
-                    window.parent.localStorage.setItem("outreach_session_id", localSession);
-                    urlParams.set("session_id", localSession);
-                    needsReload = true;
-                }}
-
-                if (needsReload) {{
-                    const newUrl = window.parent.location.pathname + "?" + urlParams.toString();
-                    window.parent.history.replaceState(null, "", newUrl);
-                    window.parent.location.reload();
-                }}
-            }} catch(e) {{}}
-        </script>
-    """, height=0, width=0)
-
-    if "session_id" not in st.query_params:
-        st.query_params["session_id"] = fallback_token
-        st.session_state["user_session_token"] = fallback_token
-    else:
-        st.session_state["user_session_token"] = st.query_params["session_id"]
+    if "user_session_token" not in st.session_state:
+        if url_session and url_session.startswith("user_"):
+            st.session_state["user_session_token"] = url_session
+        else:
+            st.session_state["user_session_token"] = f"user_{uuid.uuid4().hex[:12]}"
+        st.query_params["session_id"] = st.session_state["user_session_token"]
         
     st.session_state["ls_synced"] = True
 
-# Failsafe UI URL population
+# Failsafe URL query structure validation
 if "session_id" not in st.query_params and "user_session_token" in st.session_state:
     st.query_params["session_id"] = st.session_state["user_session_token"]
 
 USER_SESSION_TOKEN = st.session_state["user_session_token"]
+
+# 3. Synchronous Anti-Hijacking Intercept: Guarantees unique links get clean states
+if "session_verified_locally" not in st.session_state:
+    st.session_state["session_verified_locally"] = True
+    components.html(f"""
+        <script>
+            try {{
+                const currentSession = "{USER_SESSION_TOKEN}";
+                let localSession = window.parent.localStorage.getItem("outreach_session_id");
+                
+                if (localSession === currentSession) {{
+                    // Memory match is correct. Current window session verified.
+                }} else if (!localSession) {{
+                    // Fresh workspace initialization for this machine profile
+                    window.parent.localStorage.setItem("outreach_session_id", currentSession);
+                }} else {{
+                    // Link-Sharing Hijack Prevention Loop:
+                    // The user entered via a shared URL containing someone else's parameters.
+                    // Drop parent values immediately and force a clean separate workspace state tree.
+                    const fallbackToken = "user_" + Math.random().toString(16).substring(2, 14);
+                    window.parent.localStorage.setItem("outreach_session_id", fallbackToken);
+                    
+                    const url = new URL(window.parent.location.href);
+                    url.searchParams.set("session_id", fallbackToken);
+                    window.parent.location.href = url.pathname + url.search;
+                }}
+            }} catch(e) {{}}
+        </script>
+    """, height=0, width=0)
 
 
 # ============================================================
