@@ -90,7 +90,7 @@ DATABASE_URL = os.getenv(
 
 
 # ============================================================
-# 2. PAGE CONFIGURATION & USER SESSION ISOLATION
+# 2. PAGE CONFIGURATION & USER SESSION ISOLATION (LOCAL STORAGE)
 # ============================================================
 
 st.set_page_config(
@@ -100,71 +100,76 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# Ensure each user/browser link has an isolated memory space that survives refresh via LocalStorage
-if "_trigger_ls_update" in st.session_state:
-    fresh_token = st.session_state.pop("_trigger_ls_update")
-    st.session_state["ls_synced"] = True
-    st.session_state["user_session_token"] = fresh_token
-    st.query_params["session_id"] = fresh_token
-    components.html(f"""
+# Implement a zero-dependency custom component to interface with browser Local Storage.
+# This solves the requirement: saves data independently per user without leaking via shared URLs.
+local_storage_manager = components.declare_component(
+    "local_storage_manager",
+    html="""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <script src="https://cdn.jsdelivr.net/npm/streamlit-component-lib@1.3.0/dist/streamlit.js"></script>
         <script>
-            try {{
-                window.parent.localStorage.setItem("outreach_session_id", "{fresh_token}");
-                const urlParams = new URLSearchParams(window.parent.location.search);
-                urlParams.set("session_id", "{fresh_token}");
-                window.parent.history.replaceState(null, "", window.parent.location.pathname + "?" + urlParams.toString());
-            }} catch(e) {{}}
+            function onRender(event) {
+                const data = event.detail.args;
+                
+                if (data.reset && !window.hasReset) {
+                    let newUid = 'user_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 10);
+                    try { window.localStorage.setItem('ninolades_session_token', newUid); } catch(e) {}
+                    Streamlit.setComponentValue(newUid);
+                    window.hasReset = true;
+                    return;
+                }
+                
+                if (!window.rendered && !data.reset) {
+                    let uid = null;
+                    try { uid = window.localStorage.getItem('ninolades_session_token'); } catch(e) {}
+                    
+                    if (!uid) {
+                        uid = 'user_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 10);
+                        try { window.localStorage.setItem('ninolades_session_token', uid); } catch(e) {}
+                    }
+                    Streamlit.setComponentValue(uid);
+                    window.rendered = true;
+                }
+            }
+            Streamlit.events.addEventListener(Streamlit.RENDER_EVENT, onRender);
+            Streamlit.setComponentReady();
         </script>
-    """, height=0, width=0)
+    </head>
+    <body></body>
+    </html>
+    """
+)
 
-elif "ls_synced" not in st.session_state:
-    fallback_token = f"user_{uuid.uuid4().hex[:12]}"
+# Strip old session_id from URL if it exists, preventing shared links from overlapping environments
+if "session_id" in st.query_params:
+    del st.query_params["session_id"]
+
+if "ls_component_key" not in st.session_state:
+    st.session_state["ls_component_key"] = "ls_key_" + uuid.uuid4().hex
     
-    # Bi-directional LocalStorage sync: Protects data from URL sharing and restores lost parameters
-    components.html(f"""
-        <script>
-            try {{
-                const urlParams = new URLSearchParams(window.parent.location.search);
-                const urlSession = urlParams.get("session_id");
-                let localSession = window.parent.localStorage.getItem("outreach_session_id");
-                let needsReload = false;
+should_reset = st.session_state.get("reset_local_storage", False)
 
-                if (localSession) {{
-                    if (urlSession !== localSession) {{
-                        window.parent.document.body.style.display = "none";
-                        urlParams.set("session_id", localSession);
-                        needsReload = true;
-                    }}
-                }} else {{
-                    // No local memory found. Prevent shared URL hijacking by enforcing a new token.
-                    window.parent.document.body.style.display = "none";
-                    localSession = "{fallback_token}";
-                    window.parent.localStorage.setItem("outreach_session_id", localSession);
-                    urlParams.set("session_id", localSession);
-                    needsReload = true;
-                }}
+# Fetch ID from the browser's Local Storage
+local_id = local_storage_manager(reset=should_reset, key=st.session_state["ls_component_key"])
 
-                if (needsReload) {{
-                    const newUrl = window.parent.location.pathname + "?" + urlParams.toString();
-                    window.parent.history.replaceState(null, "", newUrl);
-                    window.parent.location.reload();
-                }}
-            }} catch(e) {{}}
-        </script>
-    """, height=0, width=0)
+if should_reset and local_id:
+    # Once reset completes and returns the new ID, clear the flag and apply
+    st.session_state["reset_local_storage"] = False
+    st.session_state["user_session_token"] = local_id
+    st.rerun()
 
-    if "session_id" not in st.query_params:
-        st.query_params["session_id"] = fallback_token
-        st.session_state["user_session_token"] = fallback_token
-    else:
-        st.session_state["user_session_token"] = st.query_params["session_id"]
-        
-    st.session_state["ls_synced"] = True
+if local_id is None:
+    # Halt visually until local storage seamlessly passes the token to Streamlit backend
+    st.markdown(
+        "<div style='text-align:center; margin-top:20vh; color:#a1a1aa; font-family:sans-serif;'>"
+        "Initializing isolated workspace memory...</div>", 
+        unsafe_allow_html=True
+    )
+    st.stop()
 
-# Failsafe UI URL population
-if "session_id" not in st.query_params and "user_session_token" in st.session_state:
-    st.query_params["session_id"] = st.session_state["user_session_token"]
-
+st.session_state["user_session_token"] = local_id
 USER_SESSION_TOKEN = st.session_state["user_session_token"]
 
 
@@ -1661,9 +1666,9 @@ with header_col2:
 
         st.session_state.clear()
         
-        # Generate clean new session token and trigger LocalStorage override mechanism
-        fresh_token = f"user_{uuid.uuid4().hex[:12]}"
-        st.session_state["_trigger_ls_update"] = fresh_token
+        # Trigger local storage wipe & regeneration via the frontend component
+        st.session_state["ls_component_key"] = "ls_key_" + uuid.uuid4().hex
+        st.session_state["reset_local_storage"] = True
         st.rerun()
 
     render_html(f"""
@@ -3591,186 +3596,8 @@ function getNaturalMaleVoice() {{
         (v.name.toLowerCase().includes('male') || v.name.toLowerCase().includes('man'))
     );
 
-    return maleFound || currentVoices.find(v => v.lang.startsWith('en')) || currentVoices[0];
-}}
-
-function speakText(text, onComplete) {{
-    if ('speechSynthesis' in window) {{
-        window.speechSynthesis.cancel();
-        const utterance = new SpeechSynthesisUtterance(text);
-        const selectedVoice = getNaturalMaleVoice();
-
-        if (selectedVoice) {{
-            utterance.voice = selectedVoice;
-        }}
-
-        utterance.lang = 'en-US';
-        utterance.pitch = 1.0; // Natural native pitch (no robot distortion)
-        utterance.rate = 1.0;
-
-        utterance.onend = () => {{ if (onComplete) onComplete(); }};
-        utterance.onerror = () => {{ if (onComplete) onComplete(); }};
-        
-        window.speechSynthesis.speak(utterance);
-    }} else if (onComplete) {{
-        onComplete();
-    }}
-}}
-
-async function queryGeminiVoice(userInput) {{
-    const apiKey = "{api_key}";
-    const selectedModel = "{selected_model}";
-    const textDiv = document.getElementById('voiceText');
-    const badge = document.getElementById('voiceBadge');
-
-    if (!apiKey) {{
-        textDiv.innerText = "API key missing.";
-        return;
-    }}
-
-    textDiv.innerText = "Thinking...";
-    badge.innerText = "THINKING";
-
-    try {{
-        const response = await fetch(`[https://generativelanguage.googleapis.com/v1beta/models/$](https://generativelanguage.googleapis.com/v1beta/models/$){{selectedModel}}:generateContent?key=${{apiKey}}`, {{
-            method: 'POST',
-            headers: {{ 'Content-Type': 'application/json' }},
-            body: JSON.stringify({{
-                system_instruction: {{
-                    parts: [{{
-                        text: `You are the AI Voice Copilot. System context: ${{systemContext}}. Speak concisely in 1-2 sentences maximum.`
-                    }}]
-                }},
-                contents: [{{ parts: [{{ text: userInput }}] }}]
-            }})
-        }});
-
-        const data = await response.json();
-        const reply = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "I couldn't process that clearly. Please try again.";
-
-        textDiv.innerText = reply;
-        badge.innerText = "SPEAKING";
-        
-        speakText(reply, () => {{
-            if (isListening) {{
-                badge.innerText = "LISTENING";
-                try {{ recognition.start(); }} catch(e){{}}
-            }}
-        }});
-
-    }} catch (err) {{
-        textDiv.innerText = "Connection error. Retrying...";
-        badge.innerText = "ERROR";
-    }}
-}}
-
-if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {{
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    recognition = new SpeechRecognition();
-    recognition.continuous = false;
-    recognition.interimResults = false;
-    recognition.maxAlternatives = 1;
-    recognition.lang = 'en-US';
-
-    recognition.onresult = function(event) {{
-        if (event.results && event.results[0]) {{
-            const transcript = event.results[0][0].transcript;
-            document.getElementById('voiceText').innerText = 'You: "' + transcript + '"';
-            queryGeminiVoice(transcript);
-        }}
-    }};
-
-    recognition.onerror = function() {{
-        if (isListening) {{
-            try {{ recognition.start(); }} catch(e){{}}
-        }}
-    }};
-}}
-
-function toggleVoiceSession() {{
-    const panel = document.getElementById('voicePanel');
-    const fab = document.getElementById('voiceFab');
-    const badge = document.getElementById('voiceBadge');
-    const textDiv = document.getElementById('voiceText');
-
-    if (!isListening) {{
-        panel.classList.add('visible');
-        fab.classList.replace('off', 'on');
-        badge.className = "badge-state badge-on";
-        badge.innerText = "LISTENING";
-        textDiv.innerText = "Listening clearly...";
-        
-        speakText("Online. How can I help?", () => {{
-            if (recognition) {{
-                try {{ recognition.start(); }} catch(e){{}}
-            }}
-        }});
-
-        isListening = true;
-    }} else {{
-        fab.classList.replace('on', 'off');
-        badge.className = "badge-state badge-off";
-        badge.innerText = "OFF";
-        textDiv.innerText = "Muted.";
-        
-        if (recognition) {{
-            try {{ recognition.stop(); }} catch(e){{}}
-        }}
-        window.speechSynthesis.cancel();
-        isListening = false;
-        setTimeout(() => {{ panel.classList.remove('visible'); }}, 1500);
-    }}
-}}
 </script>
 </body>
 </html>
 """
-
-components.html(voice_html, height=220, width=320)
-
-
-# ============================================================
-# 26. FOOTER
-# ============================================================
-
-render_html("""
-<div style="
-    text-align:center;
-    margin-top:70px;
-    padding-top:25px;
-    border-top:1px solid #202024;
-    color:#52525b;
-    font-size:.78rem;
-    line-height:1.6;
-">
-    <div style="
-        color:#71717a;
-        margin-bottom:8px;
-    ">
-        Outreach Intelligence Lab
-    </div>
-
-    <div>
-        Exploratory generative modeling and
-        evidence-informed science outreach.
-    </div>
-
-    <div style="
-        max-width:850px;
-        margin:12px auto 0 auto;
-    ">
-        AI-generated predictions are synthetic hypotheses.
-        They do not establish psychological, neurological,
-        clinical, or causal facts about individuals.
-        Real-world impact metrics are calculated from recorded
-        observations and participant-reported outcomes.
-    </div>
-</div>
-""")
-
-
-# ============================================================
-# 27. CLEANUP
-# ============================================================
-
-db.close()
+components.html(voice_html, height=310)
