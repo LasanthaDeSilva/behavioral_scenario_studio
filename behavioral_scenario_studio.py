@@ -11,6 +11,7 @@ A self-contained Streamlit application for:
     - Comparing predicted vs observed engagement
     - Measuring optional real-world impact
     - Exploring counterfactual interventions
+    - Predicting scenario impact across HEXACO personality profiles
     - Extracting qualitative memory/engagement themes
     - Viewing event-level analytics
 
@@ -74,7 +75,7 @@ from google.genai import types
 # ============================================================
 
 APP_TITLE = "Outreach Intelligence Lab"
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.3.0"
 
 # Real, currently existing Gemini endpoints preserved strictly
 MODEL_FLASH = "gemini-3.6-flash"
@@ -634,6 +635,23 @@ class RapidStateLog(Base):
 
     event = relationship("Event")
 
+class PersonalityProfile(Base):
+    __tablename__ = "personality_profiles"
+    
+    id = Column(String, primary_key=True)
+    session_token = Column(String, nullable=False, default="global")
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    
+    # HEXACO + Resilience Metrics
+    hexaco_h = Column(Integer, default=50) # Honesty-Humility
+    hexaco_e = Column(Integer, default=50) # Emotionality
+    hexaco_x = Column(Integer, default=50) # Extraversion
+    hexaco_a = Column(Integer, default=50) # Agreeableness
+    hexaco_c = Column(Integer, default=50) # Conscientiousness
+    hexaco_o = Column(Integer, default=50) # Openness
+    resilience_baseline = Column(Integer, default=50) 
+
 
 Base.metadata.create_all(bind=engine)
 
@@ -648,6 +666,13 @@ except Exception:
 try:
     with engine.connect() as conn:
         conn.execute(text("ALTER TABLE rapid_state_logs ADD COLUMN session_token VARCHAR DEFAULT 'global'"))
+        conn.commit()
+except Exception:
+    pass
+
+try:
+    with engine.connect() as conn:
+        conn.execute(text("ALTER TABLE personality_profiles ADD COLUMN session_token VARCHAR DEFAULT 'global'"))
         conn.commit()
 except Exception:
     pass
@@ -780,6 +805,20 @@ class OutcomePrediction(BaseModel):
     overall_outcome_narrative: str
     risk_factors: List[str] = Field(min_length=1, max_length=5)
     success_amplifiers: List[str] = Field(min_length=1, max_length=5)
+
+
+class TraitImpact(BaseModel):
+    personality_name: str
+    focus_shift_pct: int = Field(ge=-100, le=100, description="Change in focus level percentage")
+    stress_level_pct: int = Field(ge=0, le=100, description="Predicted final stress level percentage")
+    resilience_activation_pct: int = Field(ge=0, le=100, description="Percentage of resilience capacity utilized to adapt")
+    cognitive_load_pct: int = Field(ge=0, le=100, description="Predicted cognitive load during the scenario")
+    behavioral_response: str = Field(description="Scientific narrative of how this profile responds behaviorally")
+    friction_points: List[str] = Field(min_length=1, max_length=3)
+
+class PersonalityPredictorResponse(BaseModel):
+    overall_scenario_dynamics: str = Field(description="Summary of how the diverse personalities interact with the event overall")
+    impacts: List[TraitImpact]
 
 
 # ============================================================
@@ -940,6 +979,7 @@ DEFAULT_STATE = {
     "last_counterfactual": None,
     "last_impact_interpretation": None,
     "last_prediction": None,
+    "last_personality_prediction": None,
 }
 
 for key, value in DEFAULT_STATE.items():
@@ -1588,6 +1628,34 @@ Be realistic and ground estimations in environmental friction and crowd dynamics
         temperature=0.3,
     )
 
+def generate_personality_impact(
+    client,
+    model_name,
+    event,
+    personalities_data
+):
+    prompt = f"""
+EVENT: {event.name}
+OBJECTIVE: {event.objective}
+TARGET AUDIENCE: {event.target_audience}
+ENVIRONMENT: {event.environment}
+SENSORY & ACOUSTIC: {event.sensory_environment} / {event.acoustic_environment}
+CONTEXT: {event.context}
+
+PERSONALITIES TO MODEL (HEXACO + Resilience Base [0-100 scales]):
+{personalities_data}
+
+Model the specific behavioral impact, cognitive load, focus shift, and stress levels for these specific profiles as they undergo the defined scenario. Use accurate sociological and behavioral frameworks to predict how their distinct traits and resilience capacities interact with the event's environmental and operational design. Ensure responses are grounded and realistic.
+"""
+    return run_gemini(
+        client=client,
+        model_name=model_name,
+        prompt=prompt,
+        schema=PersonalityPredictorResponse,
+        system_instruction=AI_SYSTEM,
+        temperature=0.3,
+    )
+
 
 # ============================================================
 # 16. HEADER & NAVIGATION
@@ -1610,7 +1678,7 @@ render_html("""
 
 st.markdown("---")
 
-header_col1, header_col2, header_col3 = st.columns([1.5, 1, 3])
+header_col1, header_col2, header_col3 = st.columns([1.5, 1, 3.5])
 
 with header_col1:
     model_options = {
@@ -1656,6 +1724,7 @@ with header_col2:
             db.query(Event).filter(Event.session_token == USER_SESSION_TOKEN).delete(synchronize_session=False)
 
         db.query(RapidStateLog).filter(RapidStateLog.session_token == USER_SESSION_TOKEN).delete(synchronize_session=False)
+        db.query(PersonalityProfile).filter(PersonalityProfile.session_token == USER_SESSION_TOKEN).delete(synchronize_session=False)
         db.commit()
 
         st.session_state.clear()
@@ -1676,6 +1745,7 @@ with header_col3:
         "Experience Designer",
         "Live Copilot",
         "Outcome Predictor",
+        "Personality Predictor",
         "Scientific Reactions",
         "Impact Observatory",
         "Counterfactual Lab",
@@ -2113,6 +2183,154 @@ elif page == "Outcome Predictor":
                 for s in p["success_amplifiers"]:
                     st.markdown(f"- {s}")
 
+
+# ============================================================
+# 18.5 PERSONALITY PREDICTOR
+# ============================================================
+
+elif page == "Personality Predictor":
+    
+    render_html('<div class="section-heading">Behavioral Personality Lab (HEXACO + Resilience)</div>')
+    render_html('<div class="small-note" style="margin-bottom:15px;">Model how highly specific psychological profiles, defined by their HEXACO traits and baseline behavioral resilience, react dynamically to your outreach scenarios.</div>')
+
+    col_create, col_list = st.columns([1.5, 1])
+    
+    with col_create:
+        render_html('<div class="section-heading" style="margin-top:0;">Create Profile</div>')
+        with st.form("create_personality", clear_on_submit=True):
+            p_name = st.text_input("Profile Name", placeholder="e.g. High-Stress Introvert or The Resilient Explorer")
+            p_desc = st.text_input("Brief Description", placeholder="Short contextual note about this profile")
+            
+            c1, c2 = st.columns(2)
+            with c1:
+                h_val = st.slider("Honesty-Humility (H)", 0, 100, 50, help="Sincerity, fairness, greed avoidance.")
+                e_val = st.slider("Emotionality (E)", 0, 100, 50, help="Fearfulness, anxiety, dependence vs. bravery, toughness.")
+                x_val = st.slider("Extraversion (X)", 0, 100, 50, help="Social self-esteem, social boldness, sociability.")
+            with c2:
+                a_val = st.slider("Agreeableness (A)", 0, 100, 50, help="Forgivingness, gentleness, flexibility.")
+                c_val = st.slider("Conscientiousness (C)", 0, 100, 50, help="Organization, diligence, perfectionism.")
+                o_val = st.slider("Openness (O)", 0, 100, 50, help="Aesthetic appreciation, inquisitiveness, creativity.")
+            
+            res_val = st.slider("Resilience Baseline Capacity", 0, 100, 50, help="The individual's built-in capacity to bounce back from environmental or cognitive stress.")
+            
+            if st.form_submit_button("Save Profile", use_container_width=True):
+                if p_name.strip():
+                    new_profile = PersonalityProfile(
+                        id=str(uuid.uuid4()),
+                        session_token=USER_SESSION_TOKEN,
+                        name=p_name.strip(),
+                        description=p_desc.strip(),
+                        hexaco_h=h_val, hexaco_e=e_val, hexaco_x=x_val,
+                        hexaco_a=a_val, hexaco_c=c_val, hexaco_o=o_val,
+                        resilience_baseline=res_val
+                    )
+                    db.add(new_profile)
+                    db.commit()
+                    st.toast(f"Profile '{p_name}' saved.")
+                    st.rerun()
+                else:
+                    st.error("Profile Name is required.")
+
+    with col_list:
+        render_html('<div class="section-heading" style="margin-top:0;">Saved Profiles</div>')
+        saved_profiles = db.query(PersonalityProfile).filter(PersonalityProfile.session_token == USER_SESSION_TOKEN).all()
+        
+        if not saved_profiles:
+            st.info("No saved profiles. Create one to begin.")
+        else:
+            for prof in saved_profiles:
+                with st.expander(f"{prof.name}"):
+                    st.caption(f"Desc: {prof.description}")
+                    st.caption(f"H:{prof.hexaco_h} E:{prof.hexaco_e} X:{prof.hexaco_x} A:{prof.hexaco_a} C:{prof.hexaco_c} O:{prof.hexaco_o} | Res:{prof.resilience_baseline}")
+                    if st.button("Delete", key=f"del_prof_{prof.id}"):
+                        db.delete(prof)
+                        db.commit()
+                        st.toast("Profile deleted.")
+                        st.rerun()
+
+    st.markdown("---")
+    
+    events = db.query(Event).filter(Event.session_token == USER_SESSION_TOKEN).order_by(Event.date.desc()).all()
+    if not events:
+        st.info("You must create an experience in the Experience Designer before testing personalities.")
+    elif not saved_profiles:
+        st.info("You must create at least one Personality Profile to run a prediction.")
+    else:
+        render_html('<div class="section-heading">Simulate Event Impact on Personalities</div>')
+        event_map = {f"{e.name} ({e.date.strftime('%Y-%m-%d %H:%M')})": e for e in events}
+        selected_event_name = st.selectbox("Select Experience Scenario", list(event_map.keys()), key="pers_event_select")
+        event = event_map[selected_event_name]
+        
+        selected_profiles = st.multiselect(
+            "Select Profiles to Test",
+            options=[p.name for p in saved_profiles],
+            default=[p.name for p in saved_profiles][:3] # Select up to 3 by default
+        )
+        
+        if st.button("Predict Personality Impacts", type="primary", use_container_width=True):
+            if client is None:
+                st.error("Gemini is unavailable.")
+            elif not selected_profiles:
+                st.error("Select at least one profile.")
+            else:
+                target_profiles = [p for p in saved_profiles if p.name in selected_profiles]
+                profile_data_str = ""
+                for tp in target_profiles:
+                    profile_data_str += f"- {tp.name}: H({tp.hexaco_h}), E({tp.hexaco_e}), X({tp.hexaco_x}), A({tp.hexaco_a}), C({tp.hexaco_c}), O({tp.hexaco_o}), Resilience({tp.resilience_baseline})\n"
+                
+                try:
+                    with st.spinner("Modeling behavioral impacts across diverse traits..."):
+                        impact_pred = generate_personality_impact(
+                            client,
+                            selected_model,
+                            event,
+                            profile_data_str
+                        )
+                        st.session_state.last_personality_prediction = impact_pred.model_dump()
+                except Exception as exc:
+                    st.error(f"Prediction failed: {exc}")
+                    
+        if st.session_state.get("last_personality_prediction"):
+            result = st.session_state.last_personality_prediction
+            
+            render_html('<div class="section-heading">Overall Crowd Dynamics</div>')
+            render_html(f"""
+            <div class="premium-card">
+                <div style="color:var(--text); line-height:1.7;">
+                    {clean_text(result['overall_scenario_dynamics'])}
+                </div>
+            </div>
+            """)
+            
+            render_html('<div class="section-heading">Individual Profile Outcomes</div>')
+            for imp in result['impacts']:
+                st.markdown(f"### {clean_text(imp['personality_name'])}")
+                mc1, mc2, mc3, mc4 = st.columns(4)
+                
+                # Format focus shift with +/- sign
+                focus_shift = imp['focus_shift_pct']
+                focus_str = f"+{focus_shift}%" if focus_shift > 0 else f"{focus_shift}%"
+                
+                mc1.metric("Focus Shift", focus_str)
+                mc2.metric("Final Stress Level", f"{imp['stress_level_pct']}%")
+                mc3.metric("Cognitive Load", f"{imp['cognitive_load_pct']}%")
+                mc4.metric("Resilience Activated", f"{imp['resilience_activation_pct']}%")
+                
+                render_html(f"""
+                <div class="premium-card" style="margin-top: 15px;">
+                    <div class="eyebrow">Behavioral Response Narrative</div>
+                    <div style="color:var(--text-secondary); line-height:1.6;">
+                        {clean_text(imp['behavioral_response'])}
+                    </div>
+                </div>
+                """)
+                
+                if imp['friction_points']:
+                    st.markdown("**Expected Friction Points:**")
+                    for fp in imp['friction_points']:
+                        st.markdown(f"- *{clean_text(fp)}*")
+                
+                st.markdown("---")
 
 # ============================================================
 # 19. LIVE COPILOT
@@ -3769,7 +3987,4 @@ render_html("""
 
 
 # ============================================================
-# 27. CLEANUP
-# ============================================================
-
-db.close()
+# 2
