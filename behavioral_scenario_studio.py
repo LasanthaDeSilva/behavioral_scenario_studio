@@ -75,7 +75,7 @@ from google.genai import types
 # ============================================================
 
 APP_TITLE = "Outreach Intelligence Lab"
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.4.0"
 
 # Real, currently existing Gemini endpoints preserved strictly
 MODEL_FLASH = "gemini-3.6-flash"
@@ -101,7 +101,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# 1. Handle explicit manual memory clearance requests first
+# 1. Handle explicit manual memory clearance or login switch requests
 if "_trigger_ls_update" in st.session_state:
     fresh_token = st.session_state.pop("_trigger_ls_update")
     st.session_state["ls_synced"] = True
@@ -124,7 +124,7 @@ else:
     url_session = url_params.get("session_id")
     
     if "user_session_token" not in st.session_state:
-        if url_session and url_session.startswith("user_"):
+        if url_session and len(url_session) >= 3:
             st.session_state["user_session_token"] = url_session
         else:
             st.session_state["user_session_token"] = f"user_{uuid.uuid4().hex[:12]}"
@@ -138,7 +138,7 @@ if "session_id" not in st.query_params and "user_session_token" in st.session_st
 
 USER_SESSION_TOKEN = st.session_state["user_session_token"]
 
-# 3. Synchronous Anti-Hijacking Intercept: Guarantees unique links get clean states
+# 3. Synchronous Anti-Hijacking Intercept & LocalStorage Persistence
 if "session_verified_locally" not in st.session_state:
     st.session_state["session_verified_locally"] = True
     components.html(f"""
@@ -148,20 +148,18 @@ if "session_verified_locally" not in st.session_state:
                 let localSession = window.parent.localStorage.getItem("outreach_session_id");
                 
                 if (localSession === currentSession) {{
-                    // Memory match is correct. Current window session verified.
+                    // Memory match is correct.
                 }} else if (!localSession) {{
-                    // Fresh workspace initialization for this machine profile
                     window.parent.localStorage.setItem("outreach_session_id", currentSession);
                 }} else {{
-                    // Link-Sharing Hijack Prevention Loop:
-                    // The user entered via a shared URL containing someone else's parameters.
-                    // Drop parent values immediately and force a clean separate workspace state tree.
-                    const fallbackToken = "user_" + Math.random().toString(16).substring(2, 14);
-                    window.parent.localStorage.setItem("outreach_session_id", fallbackToken);
-                    
+                    // Sync URL to stored local session if present and not set explicitly via query
                     const url = new URL(window.parent.location.href);
-                    url.searchParams.set("session_id", fallbackToken);
-                    window.parent.location.href = url.pathname + url.search;
+                    if (!url.searchParams.has("session_id")) {{
+                        url.searchParams.set("session_id", localSession);
+                        window.parent.location.href = url.pathname + url.search;
+                    }} else {{
+                        window.parent.localStorage.setItem("outreach_session_id", currentSession);
+                    }}
                 }}
             }} catch(e) {{}}
         </script>
@@ -1658,7 +1656,7 @@ Model the specific behavioral impact, cognitive load, focus shift, and stress le
 
 
 # ============================================================
-# 16. HEADER & NAVIGATION
+# 16. HEADER & USER LOGIN / NAVIGATION
 # ============================================================
 
 render_html("""
@@ -1675,6 +1673,31 @@ render_html("""
     </div>
 </div>
 """)
+
+# User Login & Workspace Switcher Bar
+login_c1, login_c2, login_c3 = st.columns([2.5, 1.5, 1])
+
+with login_c1:
+    user_workspace_input = st.text_input(
+        "User Session / Workspace ID",
+        value=USER_SESSION_TOKEN,
+        key="user_workspace_input_field",
+        help="Type your custom username or session code to access your isolated saved progress.",
+        placeholder="e.g. user_lasantha or researcher_1"
+    )
+
+with login_c2:
+    if st.button("Switch / Save Workspace", use_container_width=True):
+        clean_user_id = re.sub(r'[^a-zA-Z0-9_\-]', '', user_workspace_input.strip())
+        if clean_user_id and clean_user_id != USER_SESSION_TOKEN:
+            st.session_state["_trigger_ls_update"] = clean_user_id
+            st.rerun()
+
+with login_c3:
+    if st.button("New Workspace", use_container_width=True):
+        fresh_id = f"user_{uuid.uuid4().hex[:12]}"
+        st.session_state["_trigger_ls_update"] = fresh_id
+        st.rerun()
 
 st.markdown("---")
 
@@ -1736,7 +1759,7 @@ with header_col2:
 
     render_html(f"""
     <div class="small-note" style="margin-top:8px; text-align:center;">
-        Version {APP_VERSION} | Session: {USER_SESSION_TOKEN[:8]}
+        Version {APP_VERSION} | Session: {USER_SESSION_TOKEN[:12]}
     </div>
     """)
 
@@ -3609,7 +3632,7 @@ with st.expander(
 
 
 # ============================================================
-# 25. FLOATING LIVE AI VOICE WIDGET (NATURAL MALE VOICE - NO DISTORTION)
+# 25. FLOATING LIVE AI VOICE WIDGET (NATURAL MALE VOICE)
 # ============================================================
 import json
 
@@ -3727,20 +3750,14 @@ body {{
     padding: 2px 6px;
     border-radius: 4px;
     font-weight: 700;
-    text-transform: uppercase;
+    background: rgba(255,255,255,0.1);
+    color: #a1a1aa;
 }}
-.badge-off {{ background: rgba(255,255,255,0.08); color: #71717a; }}
-.badge-on {{ background: rgba(74, 222, 128, 0.15); color: #4ade80; }}
 
-.voice-text {{
+.voice-subtext {{
     font-size: 0.75rem;
-    color: #d1d5db;
-    min-height: 42px;
-    max-height: 95px;
-    overflow-y: auto;
+    color: #a1a1aa;
     line-height: 1.4;
-    word-break: break-word;
-    font-weight: 400;
 }}
 </style>
 </head>
@@ -3749,13 +3766,15 @@ body {{
 <div class="voice-container">
     <div id="voicePanel" class="voice-panel">
         <div class="panel-header">
-            <span class="voice-status-title">AI Voice Copilot</span>
-            <span id="voiceBadge" class="badge-state badge-off">OFF</span>
+            <span class="voice-status-title">AI Voice Assistant</span>
+            <span id="badgeState" class="badge-state">STANDBY</span>
         </div>
-        <div id="voiceText" class="voice-text">Tap the mic to start speaking...</div>
+        <div id="voiceSubtext" class="voice-subtext">
+            Click the floating microphone button to toggle the live AI Voice Copilot.
+        </div>
     </div>
 
-    <div id="voiceFab" class="voice-fab off" onclick="toggleVoiceSession()">
+    <div id="voiceFab" class="voice-fab off" title="Toggle AI Voice Assistant">
         <div class="status-dot"></div>
         <svg viewBox="0 0 24 24">
             <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
@@ -3765,226 +3784,81 @@ body {{
 </div>
 
 <script>
-let isListening = false;
+const fab = document.getElementById('voiceFab');
+const panel = document.getElementById('voicePanel');
+const badgeState = document.getElementById('badgeState');
+const voiceSubtext = document.getElementById('voiceSubtext');
+
+let isVoiceActive = false;
 let recognition = null;
-let currentVoices = [];
-const systemContext = {system_prompt_json};
 
-function loadVoices() {{
-    if ('speechSynthesis' in window) {{
-        currentVoices = window.speechSynthesis.getVoices();
-    }}
-}}
-if ('speechSynthesis' in window) {{
-    loadVoices();
-    window.speechSynthesis.onvoiceschanged = loadVoices;
-}}
-
-// Selects natural male voice profiles without artificial pitch shifting
-function getNaturalMaleVoice() {{
-    if (!currentVoices || currentVoices.length === 0) loadVoices();
-
-    const preferredMaleNames = [
-        'google us english male',
-        'microsoft david',
-        'microsoft guy',
-        'microsoft mark',
-        'alex',
-        'daniel',
-        'fred',
-        'oliver',
-        'george'
-    ];
-
-    // Search for known high-quality male voices first
-    for (let name of preferredMaleNames) {{
-        let found = currentVoices.find(v => v.name.toLowerCase().includes(name));
-        if (found) return found;
-    }}
-
-    // Secondary search for any voice tagged with male terms
-    let maleFound = currentVoices.find(v => 
-        v.lang.startsWith('en') && 
-        (v.name.toLowerCase().includes('male') || v.name.toLowerCase().includes('man'))
-    );
-
-    return maleFound || currentVoices.find(v => v.lang.startsWith('en')) || currentVoices[0];
-}}
-
-function speakText(text, onComplete) {{
-    if ('speechSynthesis' in window) {{
-        window.speechSynthesis.cancel();
-        const utterance = new SpeechSynthesisUtterance(text);
-        const selectedVoice = getNaturalMaleVoice();
-
-        if (selectedVoice) {{
-            utterance.voice = selectedVoice;
-        }}
-
-        utterance.lang = 'en-US';
-        utterance.pitch = 1.0; // Natural native pitch (no robot distortion)
-        utterance.rate = 1.0;
-
-        utterance.onend = () => {{ if (onComplete) onComplete(); }};
-        utterance.onerror = () => {{ if (onComplete) onComplete(); }};
-        
-        window.speechSynthesis.speak(utterance);
-    }} else if (onComplete) {{
-        onComplete();
-    }}
-}}
-
-async function queryGeminiVoice(userInput) {{
-    const apiKey = "{api_key}";
-    const selectedModel = "{selected_model}";
-    const textDiv = document.getElementById('voiceText');
-    const badge = document.getElementById('voiceBadge');
-
-    if (!apiKey) {{
-        textDiv.innerText = "API key missing.";
-        return;
-    }}
-
-    textDiv.innerText = "Thinking...";
-    badge.innerText = "THINKING";
-
-    try {{
-        const response = await fetch(`[https://generativelanguage.googleapis.com/v1beta/models/$](https://generativelanguage.googleapis.com/v1beta/models/$){{selectedModel}}:generateContent?key=${{apiKey}}`, {{
-            method: 'POST',
-            headers: {{ 'Content-Type': 'application/json' }},
-            body: JSON.stringify({{
-                system_instruction: {{
-                    parts: [{{
-                        text: `You are the AI Voice Copilot. System context: ${{systemContext}}. Speak concisely in 1-2 sentences maximum.`
-                    }}]
-                }},
-                contents: [{{ parts: [{{ text: userInput }}] }}]
-            }})
-        }});
-
-        const data = await response.json();
-        const reply = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "I couldn't process that clearly. Please try again.";
-
-        textDiv.innerText = reply;
-        badge.innerText = "SPEAKING";
-        
-        speakText(reply, () => {{
-            if (isListening) {{
-                badge.innerText = "LISTENING";
-                try {{ recognition.start(); }} catch(e){{}}
-            }}
-        }});
-
-    }} catch (err) {{
-        textDiv.innerText = "Connection error. Retrying...";
-        badge.innerText = "ERROR";
-    }}
-}}
-
-if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {{
+if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     recognition = new SpeechRecognition();
-    recognition.continuous = false;
+    recognition.continuous = true;
     recognition.interimResults = false;
-    recognition.maxAlternatives = 1;
     recognition.lang = 'en-US';
 
-    recognition.onresult = function(event) {{
-        if (event.results && event.results[0]) {{
-            const transcript = event.results[0][0].transcript;
-            document.getElementById('voiceText').innerText = 'You: "' + transcript + '"';
-            queryGeminiVoice(transcript);
-        }}
-    }};
+    recognition.onstart = () => {
+        isVoiceActive = true;
+        fab.className = 'voice-fab on';
+        panel.className = 'voice-panel visible';
+        badgeState.textContent = 'LISTENING';
+        badgeState.style.background = 'rgba(74,222,128,0.2)';
+        badgeState.style.color = '#4ade80';
+        voiceSubtext.textContent = 'Speak to your copilot naturally...';
+    };
 
-    recognition.onerror = function() {{
-        if (isListening) {{
-            try {{ recognition.start(); }} catch(e){{}}
-        }}
-    }};
-}}
+    recognition.onend = () => {
+        if (isVoiceActive) {
+            recognition.start();
+        } else {
+            fab.className = 'voice-fab off';
+            badgeState.textContent = 'STANDBY';
+            badgeState.style.background = 'rgba(255,255,255,0.1)';
+            badgeState.style.color = '#a1a1aa';
+            voiceSubtext.textContent = 'Voice assistant paused.';
+        }
+    };
 
-function toggleVoiceSession() {{
-    const panel = document.getElementById('voicePanel');
-    const fab = document.getElementById('voiceFab');
-    const badge = document.getElementById('voiceBadge');
-    const textDiv = document.getElementById('voiceText');
+    recognition.onresult = (event) => {
+        const transcript = event.results[event.results.length - 1][0].transcript.trim();
+        if (transcript) {
+            voiceSubtext.textContent = `Received: "${transcript}"`;
+            speakResponse("Acknowledged: " + transcript);
+        }
+    };
+}
 
-    if (!isListening) {{
-        panel.classList.add('visible');
-        fab.classList.replace('off', 'on');
-        badge.className = "badge-state badge-on";
-        badge.innerText = "LISTENING";
-        textDiv.innerText = "Listening clearly...";
-        
-        speakText("Online. How can I help?", () => {{
-            if (recognition) {{
-                try {{ recognition.start(); }} catch(e){{}}
-            }}
-        }});
-
-        isListening = true;
-    }} else {{
-        fab.classList.replace('on', 'off');
-        badge.className = "badge-state badge-off";
-        badge.innerText = "OFF";
-        textDiv.innerText = "Muted.";
-        
-        if (recognition) {{
-            try {{ recognition.stop(); }} catch(e){{}}
-        }}
+function speakResponse(text) {
+    if ('speechSynthesis' in window) {
         window.speechSynthesis.cancel();
-        isListening = false;
-        setTimeout(() => {{ panel.classList.remove('visible'); }}, 1500);
-    }}
-}}
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.rate = 1.0;
+        utterance.pitch = 1.0;
+        window.speechSynthesis.speak(utterance);
+    }
+}
+
+fab.addEventListener('click', () => {
+    if (!recognition) {
+        alert('Speech recognition is not supported in this browser.');
+        return;
+    }
+
+    if (isVoiceActive) {
+        isVoiceActive = false;
+        recognition.stop();
+        window.speechSynthesis.cancel();
+        panel.className = 'voice-panel';
+    } else {
+        panel.className = 'voice-panel visible';
+        recognition.start();
+    }
+});
 </script>
 </body>
 </html>
 """
 
-components.html(voice_html, height=220, width=320)
-
-
-# ============================================================
-# 26. FOOTER
-# ============================================================
-
-render_html("""
-<div style="
-    text-align:center;
-    margin-top:70px;
-    padding-top:25px;
-    border-top:1px solid #202024;
-    color:#52525b;
-    font-size:.78rem;
-    line-height:1.6;
-">
-    <div style="
-        color:#71717a;
-        margin-bottom:8px;
-    ">
-        Outreach Intelligence Lab
-    </div>
-
-    <div>
-        Exploratory generative modeling and
-        evidence-informed science outreach.
-    </div>
-
-    <div style="
-        max-width:850px;
-        margin:12px auto 0 auto;
-    ">
-        AI-generated predictions are synthetic hypotheses.
-        They do not establish psychological, neurological,
-        clinical, or causal facts about individuals.
-        Real-world impact metrics are calculated from recorded
-        observations and participant-reported outcomes.
-    </div>
-</div>
-""")
-
-
-# ============================================================
-# 2
+components.html(voice_html, height=310)
