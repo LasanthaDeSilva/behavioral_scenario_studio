@@ -43,6 +43,7 @@ import uuid
 import math
 import sqlite3
 import textwrap
+import hashlib
 from datetime import datetime, timezone
 from typing import List, Literal, Optional, Dict, Any
 
@@ -124,7 +125,7 @@ else:
     url_session = url_params.get("session_id")
     
     if "user_session_token" not in st.session_state:
-        if url_session and url_session.startswith("user_"):
+        if url_session and (url_session.startswith("user_") or url_session.startswith("auth_")):
             st.session_state["user_session_token"] = url_session
         else:
             st.session_state["user_session_token"] = f"user_{uuid.uuid4().hex[:12]}"
@@ -512,6 +513,12 @@ def get_session_factory(_engine):
     return sessionmaker(bind=_engine, autoflush=False, autocommit=False)
 
 engine = get_db_engine()
+
+class UserAccount(Base):
+    __tablename__ = "user_accounts"
+    username = Column(String, primary_key=True)
+    password_hash = Column(String, nullable=False)
+    created_at = Column(DateTime, default=utc_now)
 
 class Event(Base):
     __tablename__ = "events"
@@ -1656,6 +1663,79 @@ Model the specific behavioral impact, cognitive load, focus shift, and stress le
         temperature=0.3,
     )
 
+# ============================================================
+# 15.5 USER AUTHENTICATION & WORKSPACE ISOLATION
+# ============================================================
+
+if "is_authenticated" not in st.session_state:
+    if USER_SESSION_TOKEN.startswith("auth_"):
+        st.session_state["is_authenticated"] = True
+    else:
+        st.session_state["is_authenticated"] = False
+
+if not st.session_state["is_authenticated"]:
+    render_html("""
+    <div class="hero" style="text-align: center; margin-top: 40px; padding-bottom: 10px;">
+        <div class="eyebrow">Outreach Intelligence Lab</div>
+        <div class="hero-title">Workspace Authentication</div>
+        <div class="hero-subtitle" style="margin: 0 auto; max-width: 600px; padding-top: 15px;">
+            Please log in or register to secure your progress. 
+            This ensures your events, models, and micro-interactions are isolated and saved across sessions.
+        </div>
+    </div>
+    """)
+    
+    st.markdown("---")
+    
+    auth_col1, auth_col2, auth_col3 = st.columns([1, 1.5, 1])
+    with auth_col2:
+        auth_mode = st.radio("Action", ["Login", "Register"], horizontal=True, label_visibility="collapsed")
+        
+        with st.form("auth_form"):
+            auth_user = st.text_input("Username")
+            auth_pass = st.text_input("Password", type="password")
+            
+            submit_label = "Enter Workspace" if auth_mode == "Login" else "Create Workspace"
+            submit_auth = st.form_submit_button(submit_label, use_container_width=True)
+            
+            if submit_auth:
+                if not auth_user.strip() or not auth_pass.strip():
+                    st.error("Username and password are required.")
+                else:
+                    db_auth = db_session()
+                    existing_user = db_auth.query(UserAccount).filter_by(username=auth_user.strip()).first()
+                    
+                    hashed_pw = hashlib.sha256(auth_pass.strip().encode()).hexdigest()
+                    
+                    if auth_mode == "Register":
+                        if existing_user:
+                            st.error("Username already taken. Please login or choose another.")
+                        else:
+                            new_user = UserAccount(
+                                username=auth_user.strip(),
+                                password_hash=hashed_pw
+                            )
+                            db_auth.add(new_user)
+                            db_auth.commit()
+                            
+                            auth_token = f"auth_{auth_user.strip()}"
+                            st.session_state["is_authenticated"] = True
+                            st.session_state["_trigger_ls_update"] = auth_token
+                            st.rerun()
+                            
+                    elif auth_mode == "Login":
+                        if not existing_user or existing_user.password_hash != hashed_pw:
+                            st.error("Invalid username or password.")
+                        else:
+                            auth_token = f"auth_{auth_user.strip()}"
+                            st.session_state["is_authenticated"] = True
+                            st.session_state["_trigger_ls_update"] = auth_token
+                            st.rerun()
+                    
+                    db_auth.close()
+    
+    st.stop()
+
 
 # ============================================================
 # 16. HEADER & NAVIGATION
@@ -1730,6 +1810,12 @@ with header_col2:
         st.session_state.clear()
         
         # Generate clean new session token and trigger LocalStorage override mechanism
+        fresh_token = f"user_{uuid.uuid4().hex[:12]}"
+        st.session_state["_trigger_ls_update"] = fresh_token
+        st.rerun()
+
+    if st.button("Logout", use_container_width=True):
+        st.session_state.clear()
         fresh_token = f"user_{uuid.uuid4().hex[:12]}"
         st.session_state["_trigger_ls_update"] = fresh_token
         st.rerun()
@@ -3796,195 +3882,4 @@ function getNaturalMaleVoice() {{
         'george'
     ];
 
-    // Search for known high-quality male voices first
-    for (let name of preferredMaleNames) {{
-        let found = currentVoices.find(v => v.name.toLowerCase().includes(name));
-        if (found) return found;
-    }}
-
-    // Secondary search for any voice tagged with male terms
-    let maleFound = currentVoices.find(v => 
-        v.lang.startsWith('en') && 
-        (v.name.toLowerCase().includes('male') || v.name.toLowerCase().includes('man'))
-    );
-
-    return maleFound || currentVoices.find(v => v.lang.startsWith('en')) || currentVoices[0];
-}}
-
-function speakText(text, onComplete) {{
-    if ('speechSynthesis' in window) {{
-        window.speechSynthesis.cancel();
-        const utterance = new SpeechSynthesisUtterance(text);
-        const selectedVoice = getNaturalMaleVoice();
-
-        if (selectedVoice) {{
-            utterance.voice = selectedVoice;
-        }}
-
-        utterance.lang = 'en-US';
-        utterance.pitch = 1.0; // Natural native pitch (no robot distortion)
-        utterance.rate = 1.0;
-
-        utterance.onend = () => {{ if (onComplete) onComplete(); }};
-        utterance.onerror = () => {{ if (onComplete) onComplete(); }};
-        
-        window.speechSynthesis.speak(utterance);
-    }} else if (onComplete) {{
-        onComplete();
-    }}
-}}
-
-async function queryGeminiVoice(userInput) {{
-    const apiKey = "{api_key}";
-    const selectedModel = "{selected_model}";
-    const textDiv = document.getElementById('voiceText');
-    const badge = document.getElementById('voiceBadge');
-
-    if (!apiKey) {{
-        textDiv.innerText = "API key missing.";
-        return;
-    }}
-
-    textDiv.innerText = "Thinking...";
-    badge.innerText = "THINKING";
-
-    try {{
-        const response = await fetch(`[https://generativelanguage.googleapis.com/v1beta/models/$](https://generativelanguage.googleapis.com/v1beta/models/$){{selectedModel}}:generateContent?key=${{apiKey}}`, {{
-            method: 'POST',
-            headers: {{ 'Content-Type': 'application/json' }},
-            body: JSON.stringify({{
-                system_instruction: {{
-                    parts: [{{
-                        text: `You are the AI Voice Copilot. System context: ${{systemContext}}. Speak concisely in 1-2 sentences maximum.`
-                    }}]
-                }},
-                contents: [{{ parts: [{{ text: userInput }}] }}]
-            }})
-        }});
-
-        const data = await response.json();
-        const reply = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "I couldn't process that clearly. Please try again.";
-
-        textDiv.innerText = reply;
-        badge.innerText = "SPEAKING";
-        
-        speakText(reply, () => {{
-            if (isListening) {{
-                badge.innerText = "LISTENING";
-                try {{ recognition.start(); }} catch(e){{}}
-            }}
-        }});
-
-    }} catch (err) {{
-        textDiv.innerText = "Connection error. Retrying...";
-        badge.innerText = "ERROR";
-    }}
-}}
-
-if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {{
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    recognition = new SpeechRecognition();
-    recognition.continuous = false;
-    recognition.interimResults = false;
-    recognition.maxAlternatives = 1;
-    recognition.lang = 'en-US';
-
-    recognition.onresult = function(event) {{
-        if (event.results && event.results[0]) {{
-            const transcript = event.results[0][0].transcript;
-            document.getElementById('voiceText').innerText = 'You: "' + transcript + '"';
-            queryGeminiVoice(transcript);
-        }}
-    }};
-
-    recognition.onerror = function() {{
-        if (isListening) {{
-            try {{ recognition.start(); }} catch(e){{}}
-        }}
-    }};
-}}
-
-function toggleVoiceSession() {{
-    const panel = document.getElementById('voicePanel');
-    const fab = document.getElementById('voiceFab');
-    const badge = document.getElementById('voiceBadge');
-    const textDiv = document.getElementById('voiceText');
-
-    if (!isListening) {{
-        panel.classList.add('visible');
-        fab.classList.replace('off', 'on');
-        badge.className = "badge-state badge-on";
-        badge.innerText = "LISTENING";
-        textDiv.innerText = "Listening clearly...";
-        
-        speakText("Online. How can I help?", () => {{
-            if (recognition) {{
-                try {{ recognition.start(); }} catch(e){{}}
-            }}
-        }});
-
-        isListening = true;
-    }} else {{
-        fab.classList.replace('on', 'off');
-        badge.className = "badge-state badge-off";
-        badge.innerText = "OFF";
-        textDiv.innerText = "Muted.";
-        
-        if (recognition) {{
-            try {{ recognition.stop(); }} catch(e){{}}
-        }}
-        window.speechSynthesis.cancel();
-        isListening = false;
-        setTimeout(() => {{ panel.classList.remove('visible'); }}, 1500);
-    }}
-}}
-</script>
-</body>
-</html>
-"""
-
-components.html(voice_html, height=220, width=320)
-
-
-# ============================================================
-# 26. FOOTER
-# ============================================================
-
-render_html("""
-<div style="
-    text-align:center;
-    margin-top:70px;
-    padding-top:25px;
-    border-top:1px solid #202024;
-    color:#52525b;
-    font-size:.78rem;
-    line-height:1.6;
-">
-    <div style="
-        color:#71717a;
-        margin-bottom:8px;
-    ">
-        Outreach Intelligence Lab
-    </div>
-
-    <div>
-        Exploratory generative modeling and
-        evidence-informed science outreach.
-    </div>
-
-    <div style="
-        max-width:850px;
-        margin:12px auto 0 auto;
-    ">
-        AI-generated predictions are synthetic hypotheses.
-        They do not establish psychological, neurological,
-        clinical, or causal facts about individuals.
-        Real-world impact metrics are calculated from recorded
-        observations and participant-reported outcomes.
-    </div>
-</div>
-""")
-
-
-# ============================================================
-# 2
+    // Search for
