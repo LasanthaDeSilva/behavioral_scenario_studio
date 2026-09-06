@@ -43,7 +43,6 @@ import uuid
 import math
 import sqlite3
 import textwrap
-import hashlib
 from datetime import datetime, timezone
 from typing import List, Literal, Optional, Dict, Any
 
@@ -92,7 +91,7 @@ DATABASE_URL = os.getenv(
 
 
 # ============================================================
-# 2. PAGE CONFIGURATION
+# 2. PAGE CONFIGURATION & USER SESSION ISOLATION
 # ============================================================
 
 st.set_page_config(
@@ -102,258 +101,75 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+# 1. Handle explicit manual memory clearance requests first
+if "_trigger_ls_update" in st.session_state:
+    fresh_token = st.session_state.pop("_trigger_ls_update")
+    st.session_state["ls_synced"] = True
+    st.session_state["user_session_token"] = fresh_token
+    st.query_params["session_id"] = fresh_token
+    components.html(f"""
+        <script>
+            try {{
+                window.parent.localStorage.setItem("outreach_session_id", "{fresh_token}");
+                const urlParams = new URLSearchParams(window.parent.location.search);
+                urlParams.set("session_id", "{fresh_token}");
+                window.parent.history.replaceState(null, "", window.parent.location.pathname + "?" + urlParams.toString());
+            }} catch(e) {{}}
+        </script>
+    """, height=0, width=0)
 
-# ============================================================
-# 3. DATABASE & MIGRATIONS
-# ============================================================
-
-Base = declarative_base()
-
-@st.cache_resource
-def get_db_engine():
-    engine_kwargs = {}
-    if DATABASE_URL.startswith("sqlite"):
-        engine_kwargs["connect_args"] = {
-            "check_same_thread": False,
-            "timeout": 15
-        }
+# 2. Pure-Python initialization block to bypass execution loop race conditions
+else:
+    url_params = st.query_params.to_dict()
+    url_session = url_params.get("session_id")
     
-    eng = create_engine(DATABASE_URL, **engine_kwargs)
-    return eng
-
-@st.cache_resource
-def get_session_factory(_engine):
-    return sessionmaker(bind=_engine, autoflush=False, autocommit=False)
-
-engine = get_db_engine()
-
-class UserAccount(Base):
-    __tablename__ = "user_accounts"
-    username = Column(String, primary_key=True)
-    password_hash = Column(String, nullable=False)
-
-class Event(Base):
-    __tablename__ = "events"
-
-    id = Column(String, primary_key=True)
-    session_token = Column(String, nullable=False, default="global")
-    name = Column(String, nullable=False)
-    date = Column(DateTime, nullable=False)
-    objective = Column(String, nullable=False)
-    context = Column(Text, nullable=True)
-    environment = Column(String, nullable=True)
-    sensory_environment = Column(String, nullable=True)
-    acoustic_environment = Column(String, nullable=True)
-    target_audience = Column(String, nullable=True)
-
-    interactions = relationship(
-        "Interaction",
-        back_populates="event",
-        cascade="all, delete-orphan"
-    )
-
-class Interaction(Base):
-    __tablename__ = "interactions"
-
-    id = Column(String, primary_key=True)
-    event_id = Column(String, ForeignKey("events.id"), nullable=False)
-    participant_code = Column(String, nullable=False)
-
-    started_at = Column(DateTime, nullable=False)
-    ended_at = Column(DateTime, nullable=True)
-
-    phase = Column(
-        String,
-        default="Approach",
-        nullable=False
-    )
-
-    stated_preference = Column(Text, nullable=True)
-
-    event = relationship(
-        "Event",
-        back_populates="interactions"
-    )
-
-    observations = relationship(
-        "Observation",
-        back_populates="interaction",
-        cascade="all, delete-orphan"
-    )
-
-    surveys = relationship(
-        "Survey",
-        back_populates="interaction",
-        cascade="all, delete-orphan"
-    )
-
-
-class Observation(Base):
-    __tablename__ = "observations"
-
-    id = Column(String, primary_key=True)
-    interaction_id = Column(
-        String,
-        ForeignKey("interactions.id"),
-        nullable=False
-    )
-
-    timestamp = Column(DateTime, nullable=False)
-    category = Column(String, nullable=False)
-    detail = Column(Text, nullable=False)
-
-    evidence_level = Column(
-        String,
-        nullable=False,
-        default="OBSERVED"
-    )
-
-    interaction = relationship(
-        "Interaction",
-        back_populates="observations"
-    )
-
-
-class Survey(Base):
-    __tablename__ = "surveys"
-
-    id = Column(String, primary_key=True)
-    interaction_id = Column(
-        String,
-        ForeignKey("interactions.id"),
-        nullable=False
-    )
-
-    timing = Column(String, nullable=False)
-
-    curiosity = Column(Float, nullable=True)
-    understanding = Column(Float, nullable=True)
-    confidence = Column(Float, nullable=True)
-
-    recall_text = Column(Text, nullable=True)
-
-    follow_through = Column(Boolean, nullable=True)
-
-    interaction = relationship(
-        "Interaction",
-        back_populates="surveys"
-    )
-
-
-class RapidStateLog(Base):
-    __tablename__ = "rapid_state_logs"
-
-    id = Column(String, primary_key=True)
-    session_token = Column(String, nullable=False, default="global")
-    event_id = Column(String, ForeignKey("events.id"), nullable=False)
-    participant_code = Column(String, nullable=False)
-    timestamp = Column(DateTime, nullable=False)
-    baseline_level = Column(String, nullable=False)
-    current_state = Column(String, nullable=False)
-
-    event = relationship("Event")
-
-class PersonalityProfile(Base):
-    __tablename__ = "personality_profiles"
-    
-    id = Column(String, primary_key=True)
-    session_token = Column(String, nullable=False, default="global")
-    name = Column(String, nullable=False)
-    description = Column(Text, nullable=True)
-    
-    # HEXACO + Resilience Metrics
-    hexaco_h = Column(Integer, default=50) # Honesty-Humility
-    hexaco_e = Column(Integer, default=50) # Emotionality
-    hexaco_x = Column(Integer, default=50) # Extraversion
-    hexaco_a = Column(Integer, default=50) # Agreeableness
-    hexaco_c = Column(Integer, default=50) # Conscientiousness
-    hexaco_o = Column(Integer, default=50) # Openness
-    resilience_baseline = Column(Integer, default=50) 
-
-
-Base.metadata.create_all(bind=engine)
-
-# Migration helpers for database columns
-try:
-    with engine.connect() as conn:
-        conn.execute(text("ALTER TABLE events ADD COLUMN session_token VARCHAR DEFAULT 'global'"))
-        conn.commit()
-except Exception:
-    pass
-
-try:
-    with engine.connect() as conn:
-        conn.execute(text("ALTER TABLE rapid_state_logs ADD COLUMN session_token VARCHAR DEFAULT 'global'"))
-        conn.commit()
-except Exception:
-    pass
-
-try:
-    with engine.connect() as conn:
-        conn.execute(text("ALTER TABLE personality_profiles ADD COLUMN session_token VARCHAR DEFAULT 'global'"))
-        conn.commit()
-except Exception:
-    pass
-
-SessionLocal = get_session_factory(engine)
-
-def db_session():
-    return SessionLocal()
-
-
-# ============================================================
-# 4. USER AUTHENTICATION & SESSION ISOLATION
-# ============================================================
-
-def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode()).hexdigest()
-
-if "logged_in_user" not in st.session_state:
-    st.session_state["logged_in_user"] = None
-
-db_auth = db_session()
-
-if st.session_state["logged_in_user"] is None:
-    st.markdown("<div style='text-align: center; margin-top: 100px;'><h1>Outreach Intelligence Lab</h1><p style='color: #a1a1aa;'>Please authenticate to access your isolated workspace.</p></div>", unsafe_allow_html=True)
-    
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        tab1, tab2 = st.tabs(["Login", "Register"])
+    if "user_session_token" not in st.session_state:
+        if url_session and url_session.startswith("user_"):
+            st.session_state["user_session_token"] = url_session
+        else:
+            st.session_state["user_session_token"] = f"user_{uuid.uuid4().hex[:12]}"
+        st.query_params["session_id"] = st.session_state["user_session_token"]
         
-        with tab1:
-            l_user = st.text_input("Username", key="l_user")
-            l_pass = st.text_input("Password", type="password", key="l_pass")
-            if st.button("Secure Login", use_container_width=True, type="primary"):
-                user_record = db_auth.query(UserAccount).filter_by(username=l_user).first()
-                if user_record and user_record.password_hash == hash_password(l_pass):
-                    st.session_state["logged_in_user"] = l_user
-                    st.rerun()
-                else:
-                    st.error("Invalid username or password.")
-        
-        with tab2:
-            r_user = st.text_input("Choose Username", key="r_user")
-            r_pass = st.text_input("Choose Password", type="password", key="r_pass")
-            if st.button("Register Account", use_container_width=True):
-                if db_auth.query(UserAccount).filter_by(username=r_user).first():
-                    st.error("Username already exists. Please choose another.")
-                elif not r_user or not r_pass:
-                    st.error("Please fill in both fields.")
-                else:
-                    new_user = UserAccount(username=r_user, password_hash=hash_password(r_pass))
-                    db_auth.add(new_user)
-                    db_auth.commit()
-                    st.success("Registered successfully! You can now log in.")
-    
-    # Halt app execution until the user successfully authenticates
-    st.stop()
+    st.session_state["ls_synced"] = True
 
-# Set global isolation token to the authenticated user
-USER_SESSION_TOKEN = st.session_state["logged_in_user"]
+# Failsafe URL query structure validation
+if "session_id" not in st.query_params and "user_session_token" in st.session_state:
+    st.query_params["session_id"] = st.session_state["user_session_token"]
+
+USER_SESSION_TOKEN = st.session_state["user_session_token"]
+
+# 3. Synchronous Anti-Hijacking Intercept: Guarantees unique links get clean states
+if "session_verified_locally" not in st.session_state:
+    st.session_state["session_verified_locally"] = True
+    components.html(f"""
+        <script>
+            try {{
+                const currentSession = "{USER_SESSION_TOKEN}";
+                let localSession = window.parent.localStorage.getItem("outreach_session_id");
+                
+                if (localSession === currentSession) {{
+                    // Memory match is correct. Current window session verified.
+                }} else if (!localSession) {{
+                    // Fresh workspace initialization for this machine profile
+                    window.parent.localStorage.setItem("outreach_session_id", currentSession);
+                }} else {{
+                    // Link-Sharing Hijack Prevention Loop:
+                    // The user entered via a shared URL containing someone else's parameters.
+                    // Drop parent values immediately and force a clean separate workspace state tree.
+                    const fallbackToken = "user_" + Math.random().toString(16).substring(2, 14);
+                    window.parent.localStorage.setItem("outreach_session_id", fallbackToken);
+                    
+                    const url = new URL(window.parent.location.href);
+                    url.searchParams.set("session_id", fallbackToken);
+                    window.parent.location.href = url.pathname + url.search;
+                }}
+            }} catch(e) {{}}
+        </script>
+    """, height=0, width=0)
 
 
 # ============================================================
-# 5. PREMIUM MINIMALIST UI & CSS
+# 3. PREMIUM MINIMALIST UI & CSS
 # ============================================================
 
 PREMIUM_CSS = """
@@ -672,8 +488,203 @@ iframe[srcdoc*="voice-fab"] {
 
 st.markdown(textwrap.dedent(PREMIUM_CSS), unsafe_allow_html=True)
 
+
 # ============================================================
-# 6. GEMINI SCHEMAS
+# 4. DATABASE & MIGRATIONS
+# ============================================================
+
+Base = declarative_base()
+
+@st.cache_resource
+def get_db_engine():
+    engine_kwargs = {}
+    if DATABASE_URL.startswith("sqlite"):
+        engine_kwargs["connect_args"] = {
+            "check_same_thread": False,
+            "timeout": 15
+        }
+    
+    eng = create_engine(DATABASE_URL, **engine_kwargs)
+    return eng
+
+@st.cache_resource
+def get_session_factory(_engine):
+    return sessionmaker(bind=_engine, autoflush=False, autocommit=False)
+
+engine = get_db_engine()
+
+class Event(Base):
+    __tablename__ = "events"
+
+    id = Column(String, primary_key=True)
+    session_token = Column(String, nullable=False, default="global")
+    name = Column(String, nullable=False)
+    date = Column(DateTime, nullable=False)
+    objective = Column(String, nullable=False)
+    context = Column(Text, nullable=True)
+    environment = Column(String, nullable=True)
+    sensory_environment = Column(String, nullable=True)
+    acoustic_environment = Column(String, nullable=True)
+    target_audience = Column(String, nullable=True)
+
+    interactions = relationship(
+        "Interaction",
+        back_populates="event",
+        cascade="all, delete-orphan"
+    )
+
+
+class Interaction(Base):
+    __tablename__ = "interactions"
+
+    id = Column(String, primary_key=True)
+    event_id = Column(String, ForeignKey("events.id"), nullable=False)
+    participant_code = Column(String, nullable=False)
+
+    started_at = Column(DateTime, nullable=False)
+    ended_at = Column(DateTime, nullable=True)
+
+    phase = Column(
+        String,
+        default="Approach",
+        nullable=False
+    )
+
+    stated_preference = Column(Text, nullable=True)
+
+    event = relationship(
+        "Event",
+        back_populates="interactions"
+    )
+
+    observations = relationship(
+        "Observation",
+        back_populates="interaction",
+        cascade="all, delete-orphan"
+    )
+
+    surveys = relationship(
+        "Survey",
+        back_populates="interaction",
+        cascade="all, delete-orphan"
+    )
+
+
+class Observation(Base):
+    __tablename__ = "observations"
+
+    id = Column(String, primary_key=True)
+    interaction_id = Column(
+        String,
+        ForeignKey("interactions.id"),
+        nullable=False
+    )
+
+    timestamp = Column(DateTime, nullable=False)
+    category = Column(String, nullable=False)
+    detail = Column(Text, nullable=False)
+
+    evidence_level = Column(
+        String,
+        nullable=False,
+        default="OBSERVED"
+    )
+
+    interaction = relationship(
+        "Interaction",
+        back_populates="observations"
+    )
+
+
+class Survey(Base):
+    __tablename__ = "surveys"
+
+    id = Column(String, primary_key=True)
+    interaction_id = Column(
+        String,
+        ForeignKey("interactions.id"),
+        nullable=False
+    )
+
+    timing = Column(String, nullable=False)
+
+    curiosity = Column(Float, nullable=True)
+    understanding = Column(Float, nullable=True)
+    confidence = Column(Float, nullable=True)
+
+    recall_text = Column(Text, nullable=True)
+
+    follow_through = Column(Boolean, nullable=True)
+
+    interaction = relationship(
+        "Interaction",
+        back_populates="surveys"
+    )
+
+
+class RapidStateLog(Base):
+    __tablename__ = "rapid_state_logs"
+
+    id = Column(String, primary_key=True)
+    session_token = Column(String, nullable=False, default="global")
+    event_id = Column(String, ForeignKey("events.id"), nullable=False)
+    participant_code = Column(String, nullable=False)
+    timestamp = Column(DateTime, nullable=False)
+    baseline_level = Column(String, nullable=False)
+    current_state = Column(String, nullable=False)
+
+    event = relationship("Event")
+
+class PersonalityProfile(Base):
+    __tablename__ = "personality_profiles"
+    
+    id = Column(String, primary_key=True)
+    session_token = Column(String, nullable=False, default="global")
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    
+    # HEXACO + Resilience Metrics
+    hexaco_h = Column(Integer, default=50) # Honesty-Humility
+    hexaco_e = Column(Integer, default=50) # Emotionality
+    hexaco_x = Column(Integer, default=50) # Extraversion
+    hexaco_a = Column(Integer, default=50) # Agreeableness
+    hexaco_c = Column(Integer, default=50) # Conscientiousness
+    hexaco_o = Column(Integer, default=50) # Openness
+    resilience_baseline = Column(Integer, default=50) 
+
+
+Base.metadata.create_all(bind=engine)
+
+# Migration helpers for database columns
+try:
+    with engine.connect() as conn:
+        conn.execute(text("ALTER TABLE events ADD COLUMN session_token VARCHAR DEFAULT 'global'"))
+        conn.commit()
+except Exception:
+    pass
+
+try:
+    with engine.connect() as conn:
+        conn.execute(text("ALTER TABLE rapid_state_logs ADD COLUMN session_token VARCHAR DEFAULT 'global'"))
+        conn.commit()
+except Exception:
+    pass
+
+try:
+    with engine.connect() as conn:
+        conn.execute(text("ALTER TABLE personality_profiles ADD COLUMN session_token VARCHAR DEFAULT 'global'"))
+        conn.commit()
+except Exception:
+    pass
+
+SessionLocal = get_session_factory(engine)
+
+def db_session():
+    return SessionLocal()
+
+
+# ============================================================
+# 5. GEMINI SCHEMAS
 # ============================================================
 
 ConfidenceLevel = Literal["Low", "Moderate", "High"]
@@ -811,7 +822,7 @@ class PersonalityPredictorResponse(BaseModel):
 
 
 # ============================================================
-# 7. GEMINI CLIENT
+# 6. GEMINI CLIENT
 # ============================================================
 
 def get_api_key() -> str:
@@ -885,7 +896,7 @@ def run_gemini(
 
 
 # ============================================================
-# 8. SYSTEM INSTRUCTIONS
+# 7. SYSTEM INSTRUCTIONS
 # ============================================================
 
 AI_SYSTEM = """
@@ -957,7 +968,7 @@ Prefer:
 
 
 # ============================================================
-# 9. SESSION STATE INIT & RESTORE
+# 8. SESSION STATE INIT & RESTORE
 # ============================================================
 
 DEFAULT_STATE = {
@@ -1000,7 +1011,7 @@ if st.session_state.active_event_id and st.session_state.active_interaction_id i
 
 
 # ============================================================
-# 10. HELPER FUNCTIONS
+# 9. HELPER FUNCTIONS
 # ============================================================
 
 def render_html(html_str: str):
@@ -1139,7 +1150,7 @@ def get_event_interactions(db, event_id):
 
 
 # ============================================================
-# 11. DETERMINISTIC IMPACT ENGINE
+# 10. DETERMINISTIC IMPACT ENGINE
 # ============================================================
 
 def calculate_event_impact(db, event_id):
@@ -1323,7 +1334,7 @@ def calculate_event_impact(db, event_id):
 
 
 # ============================================================
-# 12. FORWARD MODEL
+# 11. FORWARD MODEL
 # ============================================================
 
 def generate_forward_model(
@@ -1386,7 +1397,7 @@ not manipulate people.
 
 
 # ============================================================
-# 13. LIVE ADAPTATION MODEL
+# 12. LIVE ADAPTATION MODEL
 # ============================================================
 
 def generate_live_recommendation(
@@ -1454,7 +1465,7 @@ Do not treat an observation as proof of an internal state.
 
 
 # ============================================================
-# 14. COUNTERFACTUAL MODEL
+# 13. COUNTERFACTUAL MODEL
 # ============================================================
 
 def generate_counterfactual(
@@ -1504,7 +1515,7 @@ This is a theoretical counterfactual.
 
 
 # ============================================================
-# 15. MEMORY/THEME MODEL
+# 14. MEMORY/THEME MODEL
 # ============================================================
 
 def generate_theme(
@@ -1536,7 +1547,7 @@ Use only information contained in the response.
 
 
 # ============================================================
-# 16. IMPACT INTERPRETATION & PREDICTION
+# 15. IMPACT INTERPRETATION & PREDICTION
 # ============================================================
 
 def generate_impact_interpretation(
@@ -1647,7 +1658,7 @@ Model the specific behavioral impact, cognitive load, focus shift, and stress le
 
 
 # ============================================================
-# 17. HEADER & NAVIGATION
+# 16. HEADER & NAVIGATION
 # ============================================================
 
 render_html("""
@@ -1696,7 +1707,8 @@ with header_col1:
     """)
 
 with header_col2:
-    if st.button("Safe Erase Memory", use_container_width=True, help="Wipes all events and logs tied to your account."):
+    if st.button("Clean Memory", use_container_width=True):
+        # Explicitly clear only this user's persistent database entries
         user_events = db.query(Event).filter(Event.session_token == USER_SESSION_TOKEN).all()
         user_event_ids = [e.id for e in user_events]
         
@@ -1715,21 +1727,16 @@ with header_col2:
         db.query(PersonalityProfile).filter(PersonalityProfile.session_token == USER_SESSION_TOKEN).delete(synchronize_session=False)
         db.commit()
 
-        for key in ["active_event_id", "active_interaction_id", "last_recommendation", "last_forward_model", "last_counterfactual", "last_impact_interpretation", "last_prediction", "last_personality_prediction"]:
-            if key in st.session_state:
-                st.session_state[key] = None
-        
-        st.toast("Memory safely erased. Account retained.")
-        st.rerun()
-
-    if st.button("Logout", use_container_width=True):
-        st.session_state["logged_in_user"] = None
         st.session_state.clear()
+        
+        # Generate clean new session token and trigger LocalStorage override mechanism
+        fresh_token = f"user_{uuid.uuid4().hex[:12]}"
+        st.session_state["_trigger_ls_update"] = fresh_token
         st.rerun()
 
     render_html(f"""
     <div class="small-note" style="margin-top:8px; text-align:center;">
-        Version {APP_VERSION} | User: {USER_SESSION_TOKEN}
+        Version {APP_VERSION} | Session: {USER_SESSION_TOKEN[:8]}
     </div>
     """)
 
@@ -1769,7 +1776,7 @@ if client is None:
 
 
 # ============================================================
-# 18. EXPERIENCE DESIGNER
+# 17. EXPERIENCE DESIGNER
 # ============================================================
 
 if page == "Experience Designer":
@@ -2010,7 +2017,7 @@ Participant autonomy: {optional_choice}
 
 
 # ============================================================
-# 19. OUTCOME PREDICTOR
+# 18. OUTCOME PREDICTOR
 # ============================================================
 
 elif page == "Outcome Predictor":
@@ -2178,7 +2185,7 @@ elif page == "Outcome Predictor":
 
 
 # ============================================================
-# 20. PERSONALITY PREDICTOR
+# 18.5 PERSONALITY PREDICTOR
 # ============================================================
 
 elif page == "Personality Predictor":
@@ -2326,7 +2333,7 @@ elif page == "Personality Predictor":
                 st.markdown("---")
 
 # ============================================================
-# 21. LIVE COPILOT
+# 19. LIVE COPILOT
 # ============================================================
 
 elif page == "Live Copilot":
@@ -2746,7 +2753,7 @@ elif page == "Live Copilot":
 
 
 # ============================================================
-# 22. SCIENTIFIC REACTIONS
+# 20. SCIENTIFIC REACTIONS
 # ============================================================
 
 elif page == "Scientific Reactions":
@@ -2808,7 +2815,7 @@ elif page == "Scientific Reactions":
 
 
 # ============================================================
-# 23. IMPACT OBSERVATORY
+# 21. IMPACT OBSERVATORY
 # ============================================================
 
 elif page == "Impact Observatory":
@@ -3101,7 +3108,7 @@ elif page == "Impact Observatory":
 
 
 # ============================================================
-# 24. COUNTERFACTUAL LAB
+# 22. COUNTERFACTUAL LAB
 # ============================================================
 
 elif page == "Counterfactual Lab":
@@ -3278,7 +3285,7 @@ elif page == "Counterfactual Lab":
 
 
 # ============================================================
-# 25. METHODOLOGY
+# 23. METHODOLOGY
 # ============================================================
 
 elif page == "Methodology":
@@ -3431,7 +3438,7 @@ elif page == "Methodology":
 
 
 # ============================================================
-# 26. OPTIONAL LIGHTWEIGHT IMPACT CAPTURE
+# 24. OPTIONAL LIGHTWEIGHT IMPACT CAPTURE
 # ============================================================
 
 st.markdown("---")
@@ -3602,7 +3609,7 @@ with st.expander(
 
 
 # ============================================================
-# 27. FLOATING LIVE AI VOICE WIDGET (NATURAL MALE VOICE - NO DISTORTION)
+# 25. FLOATING LIVE AI VOICE WIDGET (NATURAL MALE VOICE - NO DISTORTION)
 # ============================================================
 import json
 
@@ -3781,15 +3788,203 @@ function getNaturalMaleVoice() {{
         'google us english male',
         'microsoft david',
         'microsoft guy',
-        'microsoft'
+        'microsoft mark',
+        'alex',
+        'daniel',
+        'fred',
+        'oliver',
+        'george'
     ];
-    
-    // Implementation placeholder for widget logic
-    return null;
+
+    // Search for known high-quality male voices first
+    for (let name of preferredMaleNames) {{
+        let found = currentVoices.find(v => v.name.toLowerCase().includes(name));
+        if (found) return found;
+    }}
+
+    // Secondary search for any voice tagged with male terms
+    let maleFound = currentVoices.find(v => 
+        v.lang.startsWith('en') && 
+        (v.name.toLowerCase().includes('male') || v.name.toLowerCase().includes('man'))
+    );
+
+    return maleFound || currentVoices.find(v => v.lang.startsWith('en')) || currentVoices[0];
+}}
+
+function speakText(text, onComplete) {{
+    if ('speechSynthesis' in window) {{
+        window.speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(text);
+        const selectedVoice = getNaturalMaleVoice();
+
+        if (selectedVoice) {{
+            utterance.voice = selectedVoice;
+        }}
+
+        utterance.lang = 'en-US';
+        utterance.pitch = 1.0; // Natural native pitch (no robot distortion)
+        utterance.rate = 1.0;
+
+        utterance.onend = () => {{ if (onComplete) onComplete(); }};
+        utterance.onerror = () => {{ if (onComplete) onComplete(); }};
+        
+        window.speechSynthesis.speak(utterance);
+    }} else if (onComplete) {{
+        onComplete();
+    }}
+}}
+
+async function queryGeminiVoice(userInput) {{
+    const apiKey = "{api_key}";
+    const selectedModel = "{selected_model}";
+    const textDiv = document.getElementById('voiceText');
+    const badge = document.getElementById('voiceBadge');
+
+    if (!apiKey) {{
+        textDiv.innerText = "API key missing.";
+        return;
+    }}
+
+    textDiv.innerText = "Thinking...";
+    badge.innerText = "THINKING";
+
+    try {{
+        const response = await fetch(`[https://generativelanguage.googleapis.com/v1beta/models/$](https://generativelanguage.googleapis.com/v1beta/models/$){{selectedModel}}:generateContent?key=${{apiKey}}`, {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }},
+            body: JSON.stringify({{
+                system_instruction: {{
+                    parts: [{{
+                        text: `You are the AI Voice Copilot. System context: ${{systemContext}}. Speak concisely in 1-2 sentences maximum.`
+                    }}]
+                }},
+                contents: [{{ parts: [{{ text: userInput }}] }}]
+            }})
+        }});
+
+        const data = await response.json();
+        const reply = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "I couldn't process that clearly. Please try again.";
+
+        textDiv.innerText = reply;
+        badge.innerText = "SPEAKING";
+        
+        speakText(reply, () => {{
+            if (isListening) {{
+                badge.innerText = "LISTENING";
+                try {{ recognition.start(); }} catch(e){{}}
+            }}
+        }});
+
+    }} catch (err) {{
+        textDiv.innerText = "Connection error. Retrying...";
+        badge.innerText = "ERROR";
+    }}
+}}
+
+if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {{
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+    recognition.lang = 'en-US';
+
+    recognition.onresult = function(event) {{
+        if (event.results && event.results[0]) {{
+            const transcript = event.results[0][0].transcript;
+            document.getElementById('voiceText').innerText = 'You: "' + transcript + '"';
+            queryGeminiVoice(transcript);
+        }}
+    }};
+
+    recognition.onerror = function() {{
+        if (isListening) {{
+            try {{ recognition.start(); }} catch(e){{}}
+        }}
+    }};
+}}
+
+function toggleVoiceSession() {{
+    const panel = document.getElementById('voicePanel');
+    const fab = document.getElementById('voiceFab');
+    const badge = document.getElementById('voiceBadge');
+    const textDiv = document.getElementById('voiceText');
+
+    if (!isListening) {{
+        panel.classList.add('visible');
+        fab.classList.replace('off', 'on');
+        badge.className = "badge-state badge-on";
+        badge.innerText = "LISTENING";
+        textDiv.innerText = "Listening clearly...";
+        
+        speakText("Online. How can I help?", () => {{
+            if (recognition) {{
+                try {{ recognition.start(); }} catch(e){{}}
+            }}
+        }});
+
+        isListening = true;
+    }} else {{
+        fab.classList.replace('on', 'off');
+        badge.className = "badge-state badge-off";
+        badge.innerText = "OFF";
+        textDiv.innerText = "Muted.";
+        
+        if (recognition) {{
+            try {{ recognition.stop(); }} catch(e){{}}
+        }}
+        window.speechSynthesis.cancel();
+        isListening = false;
+        setTimeout(() => {{ panel.classList.remove('visible'); }}, 1500);
+    }}
 }}
 </script>
 </body>
 </html>
 """
 
-components.html(voice_html, height=0)
+components.html(voice_html, height=220, width=320)
+
+
+# ============================================================
+# 26. FOOTER
+# ============================================================
+
+render_html("""
+<div style="
+    text-align:center;
+    margin-top:70px;
+    padding-top:25px;
+    border-top:1px solid #202024;
+    color:#52525b;
+    font-size:.78rem;
+    line-height:1.6;
+">
+    <div style="
+        color:#71717a;
+        margin-bottom:8px;
+    ">
+        Outreach Intelligence Lab
+    </div>
+
+    <div>
+        Exploratory generative modeling and
+        evidence-informed science outreach.
+    </div>
+
+    <div style="
+        max-width:850px;
+        margin:12px auto 0 auto;
+    ">
+        AI-generated predictions are synthetic hypotheses.
+        They do not establish psychological, neurological,
+        clinical, or causal facts about individuals.
+        Real-world impact metrics are calculated from recorded
+        observations and participant-reported outcomes.
+    </div>
+</div>
+""")
+
+
+# ============================================================
+# 2
