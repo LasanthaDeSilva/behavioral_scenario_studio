@@ -41,10 +41,10 @@ import re
 import html
 import uuid
 import math
-import secrets
-import hashlib
 import sqlite3
 import textwrap
+import hashlib
+import secrets
 from datetime import datetime, timezone
 from typing import List, Literal, Optional, Dict, Any
 
@@ -65,7 +65,6 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
-from sqlalchemy.pool import NullPool
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -94,7 +93,7 @@ DATABASE_URL = os.getenv(
 
 
 # ============================================================
-# 2. PAGE CONFIGURATION
+# 2. PAGE CONFIGURATION & USER SESSION ISOLATION
 # ============================================================
 
 st.set_page_config(
@@ -104,14 +103,73 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# NOTE ON IDENTITY: this app used to identify "users" with an anonymous
-# random token stashed in the browser's localStorage/URL. That has been
-# replaced with real account login (username + password). See section
-# "4B. AUTHENTICATION" below, which runs once the database exists and is
-# responsible for setting USER_SESSION_TOKEN. Nothing past that point
-# had to change: every query in this file already filtered on
-# USER_SESSION_TOKEN, which now means "this logged-in account" instead
-# of "this anonymous browser."
+# 1. Handle explicit manual memory clearance requests first
+if "_trigger_ls_update" in st.session_state:
+    fresh_token = st.session_state.pop("_trigger_ls_update")
+    st.session_state["ls_synced"] = True
+    st.session_state["user_session_token"] = fresh_token
+    st.query_params["session_id"] = fresh_token
+    components.html(f"""
+        <script>
+            try {{
+                window.parent.localStorage.setItem("outreach_session_id", "{fresh_token}");
+                const urlParams = new URLSearchParams(window.parent.location.search);
+                urlParams.set("session_id", "{fresh_token}");
+                window.parent.history.replaceState(null, "", window.parent.location.pathname + "?" + urlParams.toString());
+            }} catch(e) {{}}
+        </script>
+    """, height=0, width=0)
+
+# 2. Pure-Python initialization block to bypass execution loop race conditions
+else:
+    url_params = st.query_params.to_dict()
+    url_session = url_params.get("session_id")
+    
+    if "user_session_token" not in st.session_state:
+        if url_session and url_session.startswith("auth_"):
+            st.session_state["user_session_token"] = url_session
+        elif url_session and url_session.startswith("user_"):
+            st.session_state["user_session_token"] = url_session
+        else:
+            st.session_state["user_session_token"] = f"user_{uuid.uuid4().hex[:12]}"
+        st.query_params["session_id"] = st.session_state["user_session_token"]
+        
+    st.session_state["ls_synced"] = True
+
+# Failsafe URL query structure validation
+if "session_id" not in st.query_params and "user_session_token" in st.session_state:
+    st.query_params["session_id"] = st.session_state["user_session_token"]
+
+USER_SESSION_TOKEN = st.session_state["user_session_token"]
+
+# 3. Synchronous Anti-Hijacking Intercept: Guarantees unique links get clean states
+if "session_verified_locally" not in st.session_state:
+    st.session_state["session_verified_locally"] = True
+    components.html(f"""
+        <script>
+            try {{
+                const currentSession = "{USER_SESSION_TOKEN}";
+                let localSession = window.parent.localStorage.getItem("outreach_session_id");
+                
+                if (localSession === currentSession) {{
+                    // Memory match is correct. Current window session verified.
+                }} else if (!localSession) {{
+                    // Fresh workspace initialization for this machine profile
+                    window.parent.localStorage.setItem("outreach_session_id", currentSession);
+                }} else {{
+                    // Link-Sharing Hijack Prevention Loop:
+                    // The user entered via a shared URL containing someone else's parameters.
+                    // Drop parent values immediately and force a clean separate workspace state tree.
+                    const fallbackToken = "user_" + Math.random().toString(16).substring(2, 14);
+                    window.parent.localStorage.setItem("outreach_session_id", fallbackToken);
+                    
+                    const url = new URL(window.parent.location.href);
+                    url.searchParams.set("session_id", fallbackToken);
+                    window.parent.location.href = url.pathname + url.search;
+                }}
+            }} catch(e) {{}}
+        </script>
+    """, height=0, width=0)
 
 
 # ============================================================
@@ -449,18 +507,7 @@ def get_db_engine():
             "check_same_thread": False,
             "timeout": 15
         }
-        # SQLite has no real concept of a shared connection pool, and this
-        # engine is cached (st.cache_resource) and reused by every visitor
-        # to the app. Streamlit reruns the whole script on every
-        # interaction, so under the default pool (QueuePool, capped at
-        # pool_size + max_overflow = 15 connections, 30s pool_timeout),
-        # a busy app can exhaust that cap and every further request just
-        # times out waiting -- which is exactly a
-        # sqlalchemy.exc.TimeoutError. NullPool removes the fixed cap: it
-        # opens a fresh (cheap, local-file) SQLite connection per checkout
-        # instead of queueing for one of a limited set.
-        engine_kwargs["poolclass"] = NullPool
-
+    
     eng = create_engine(DATABASE_URL, **engine_kwargs)
     return eng
 
@@ -469,6 +516,15 @@ def get_session_factory(_engine):
     return sessionmaker(bind=_engine, autoflush=False, autocommit=False)
 
 engine = get_db_engine()
+
+class UserAccount(Base):
+    __tablename__ = "user_accounts"
+    
+    id = Column(String, primary_key=True)
+    username = Column(String, unique=True, nullable=False)
+    password_hash = Column(String, nullable=False)
+    salt = Column(String, nullable=False)
+    user_token = Column(String, nullable=False, unique=True)
 
 class Event(Base):
     __tablename__ = "events"
@@ -592,6 +648,7 @@ class RapidStateLog(Base):
 
     event = relationship("Event")
 
+
 class PersonalityProfile(Base):
     __tablename__ = "personality_profiles"
     
@@ -608,34 +665,6 @@ class PersonalityProfile(Base):
     hexaco_c = Column(Integer, default=50) # Conscientiousness
     hexaco_o = Column(Integer, default=50) # Openness
     resilience_baseline = Column(Integer, default=50) 
-
-
-class User(Base):
-    """A registered account. Each user's outreach data (events,
-    interactions, observations, surveys, rapid-state logs, and
-    personality profiles) is scoped to their own account only, via
-    USER_SESSION_TOKEN, and is never visible to other users."""
-    __tablename__ = "users"
-
-    id = Column(String, primary_key=True)
-    username = Column(String, nullable=False, unique=True)
-    password_hash = Column(String, nullable=False)
-    password_salt = Column(String, nullable=False)
-    created_at = Column(DateTime, nullable=False)
-
-
-class AuthToken(Base):
-    """A long-lived 'remember me' token so a logged-in user stays signed
-    in across page refreshes and closed/reopened browser tabs without
-    retyping their password. Logging out deletes the row, which
-    immediately invalidates the token everywhere it is stored."""
-    __tablename__ = "auth_tokens"
-
-    token = Column(String, primary_key=True)
-    user_id = Column(String, ForeignKey("users.id"), nullable=False)
-    created_at = Column(DateTime, nullable=False)
-
-    user = relationship("User")
 
 
 Base.metadata.create_all(bind=engine)
@@ -666,292 +695,6 @@ SessionLocal = get_session_factory(engine)
 
 def db_session():
     return SessionLocal()
-
-
-# ============================================================
-# 4B. AUTHENTICATION (real per-user accounts)
-# ============================================================
-#
-# What this section does, in plain terms:
-#
-#   - Every user now has a real account (username + password) instead
-#     of an anonymous browser fingerprint. USER_SESSION_TOKEN, which
-#     the entire rest of this file already used to scope every
-#     database query, is now derived from the logged-in account's id.
-#     No query or model further down had to change.
-#   - Passwords are never stored in plain text. They are hashed with
-#     PBKDF2-HMAC-SHA256 (260,000 iterations, unique random salt per
-#     user) -- the same algorithm family Django uses by default.
-#   - A "remember me" token (a random string unrelated to the password)
-#     is kept in the browser's localStorage and mirrored into the page
-#     URL, the same general mechanism the app already relied on, so a
-#     refresh or a closed-and-reopened tab restores the session without
-#     retyping a password. Logging out deletes that token from the
-#     database immediately, so it stops working even if it lingers in
-#     browser history.
-#   - New accounts start completely empty: a brand-new USER_SESSION_TOKEN
-#     matches zero existing rows, so "the whole thing starts new for a
-#     new user" is automatic.
-#
-# Note for anyone upgrading an existing deployment of this app: data
-# created under the old anonymous-browser-token system will not be
-# reachable through the new accounts (the token formats are different
-# on purpose, so a guessed/reused token can't collide with a real
-# account). If old data needs to be kept, it should be migrated by hand
-# before this version goes live.
-
-def render_html(html_str: str):
-    safe_html = "\n".join([line.lstrip() for line in html_str.split("\n")])
-    st.markdown(safe_html, unsafe_allow_html=True)
-
-
-AUTH_QUERY_KEY = "auth"
-AUTH_LOCAL_STORAGE_KEY = "outreach_auth_token"
-PBKDF2_ITERATIONS = 260_000
-
-
-def hash_password(password: str, salt: Optional[str] = None):
-    """Returns (hash_hex, salt_hex). PBKDF2-HMAC-SHA256, 260k iterations."""
-    if salt is None:
-        salt = secrets.token_hex(16)
-    derived = hashlib.pbkdf2_hmac(
-        "sha256",
-        password.encode("utf-8"),
-        bytes.fromhex(salt),
-        PBKDF2_ITERATIONS,
-    )
-    return derived.hex(), salt
-
-
-def verify_password(password: str, salt: str, expected_hash: str) -> bool:
-    derived, _ = hash_password(password, salt)
-    return secrets.compare_digest(derived, expected_hash)
-
-
-def normalize_username(raw: str) -> str:
-    return raw.strip().lower()
-
-
-def get_user_by_username(db, username: str) -> Optional[User]:
-    return db.query(User).filter(
-        User.username == normalize_username(username)
-    ).first()
-
-
-def register_user(db, username: str, password: str) -> User:
-    password_hash, salt = hash_password(password)
-    user = User(
-        id=f"usr_{uuid.uuid4().hex[:16]}",
-        username=normalize_username(username),
-        password_hash=password_hash,
-        password_salt=salt,
-        created_at=datetime.now(timezone.utc),
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-    return user
-
-
-def issue_auth_token(db, user_id: str) -> str:
-    token = secrets.token_urlsafe(32)
-    db.add(AuthToken(
-        token=token,
-        user_id=user_id,
-        created_at=datetime.now(timezone.utc),
-    ))
-    db.commit()
-    return token
-
-
-def resolve_user_from_token(db, token: str) -> Optional[User]:
-    if not token:
-        return None
-    row = db.query(AuthToken).filter(AuthToken.token == token).first()
-    if not row:
-        return None
-    return db.query(User).filter(User.id == row.user_id).first()
-
-
-def revoke_auth_token(db, token: Optional[str]):
-    if not token:
-        return
-    db.query(AuthToken).filter(AuthToken.token == token).delete(synchronize_session=False)
-    db.commit()
-
-
-def remember_token_in_browser(token: str):
-    components.html(f"""
-        <script>
-            try {{
-                window.parent.localStorage.setItem("{AUTH_LOCAL_STORAGE_KEY}", "{token}");
-            }} catch(e) {{}}
-        </script>
-    """, height=0, width=0)
-
-
-def forget_token_in_browser():
-    components.html(f"""
-        <script>
-            try {{
-                window.parent.localStorage.removeItem("{AUTH_LOCAL_STORAGE_KEY}");
-            }} catch(e) {{}}
-        </script>
-    """, height=0, width=0)
-
-
-def restore_token_from_browser():
-    """On a cold load with no ?auth= in the URL, ask the browser whether
-    it remembers a token in localStorage and, if so, reload once with it
-    attached to the URL so Python can pick it up."""
-    components.html(f"""
-        <script>
-            try {{
-                const remembered = window.parent.localStorage.getItem("{AUTH_LOCAL_STORAGE_KEY}");
-                const url = new URL(window.parent.location.href);
-                if (remembered && !url.searchParams.get("{AUTH_QUERY_KEY}")) {{
-                    url.searchParams.set("{AUTH_QUERY_KEY}", remembered);
-                    window.parent.location.replace(url.pathname + url.search);
-                }}
-            }} catch(e) {{}}
-        </script>
-    """, height=0, width=0)
-
-
-# --- Resolve who (if anyone) is currently logged in ------------------
-_auth_db = db_session()
-
-if "auth_user_id" not in st.session_state:
-    _token_from_url = st.query_params.get(AUTH_QUERY_KEY)
-
-    if _token_from_url:
-        _remembered_user = resolve_user_from_token(_auth_db, _token_from_url)
-        if _remembered_user:
-            st.session_state["auth_user_id"] = _remembered_user.id
-            st.session_state["auth_username"] = _remembered_user.username
-            st.session_state["auth_token"] = _token_from_url
-        else:
-            # Stale or revoked token -- scrub it so we don't loop on it.
-            if AUTH_QUERY_KEY in st.query_params:
-                del st.query_params[AUTH_QUERY_KEY]
-            forget_token_in_browser()
-    elif "_checked_remember_me" not in st.session_state:
-        st.session_state["_checked_remember_me"] = True
-        restore_token_from_browser()
-
-_auth_db.close()
-
-# --- Gate: show login / register until authenticated ------------------
-if "auth_user_id" not in st.session_state:
-
-    render_html("""
-    <div class="hero">
-        <div class="eyebrow">Ninolades Research Platform</div>
-        <div class="hero-title">Outreach Intelligence Lab</div>
-        <div class="hero-subtitle">
-            Log in or create a free account to start designing outreach
-            experiences. Everything you build is saved to your account
-            only, stays private, and is exactly where you left it the
-            next time you log in -- even if you close the browser.
-        </div>
-    </div>
-    """)
-
-    st.markdown("---")
-
-    _left, _mid, _right = st.columns([1, 1.3, 1])
-
-    with _mid:
-        render_html('<div class="premium-card">')
-
-        tab_login, tab_register = st.tabs(["Log in", "Create account"])
-
-        with tab_login:
-            with st.form("login_form"):
-                login_username = st.text_input("Username", key="login_username_input")
-                login_password = st.text_input(
-                    "Password", type="password", key="login_password_input"
-                )
-                login_submit = st.form_submit_button(
-                    "Log in", type="primary", use_container_width=True
-                )
-
-            if login_submit:
-                if not login_username.strip() or not login_password:
-                    st.error("Enter both a username and password.")
-                else:
-                    _db = db_session()
-                    candidate = get_user_by_username(_db, login_username)
-                    if candidate and verify_password(
-                        login_password, candidate.password_salt, candidate.password_hash
-                    ):
-                        new_token = issue_auth_token(_db, candidate.id)
-                        st.session_state["auth_user_id"] = candidate.id
-                        st.session_state["auth_username"] = candidate.username
-                        st.session_state["auth_token"] = new_token
-                        st.query_params[AUTH_QUERY_KEY] = new_token
-                        remember_token_in_browser(new_token)
-                        _db.close()
-                        st.rerun()
-                    else:
-                        _db.close()
-                        st.error("Incorrect username or password.")
-
-        with tab_register:
-            with st.form("register_form"):
-                reg_username = st.text_input(
-                    "Choose a username", key="reg_username_input"
-                )
-                reg_password = st.text_input(
-                    "Choose a password", type="password", key="reg_password_input"
-                )
-                reg_password_confirm = st.text_input(
-                    "Confirm password", type="password", key="reg_password_confirm_input"
-                )
-                register_submit = st.form_submit_button(
-                    "Create account", type="primary", use_container_width=True
-                )
-
-            if register_submit:
-                _clean_username = reg_username.strip()
-                if not _clean_username or not reg_password:
-                    st.error("Choose a username and password.")
-                elif len(_clean_username) < 3:
-                    st.error("Username must be at least 3 characters.")
-                elif len(reg_password) < 8:
-                    st.error("Password must be at least 8 characters.")
-                elif reg_password != reg_password_confirm:
-                    st.error("Passwords do not match.")
-                else:
-                    _db = db_session()
-                    if get_user_by_username(_db, _clean_username):
-                        _db.close()
-                        st.error("That username is already taken.")
-                    else:
-                        new_user = register_user(_db, _clean_username, reg_password)
-                        new_token = issue_auth_token(_db, new_user.id)
-                        st.session_state["auth_user_id"] = new_user.id
-                        st.session_state["auth_username"] = new_user.username
-                        st.session_state["auth_token"] = new_token
-                        st.query_params[AUTH_QUERY_KEY] = new_token
-                        remember_token_in_browser(new_token)
-                        _db.close()
-                        st.rerun()
-
-        render_html("</div>")
-
-        render_html("""
-        <div class="small-note" style="text-align:center; margin-top:10px;">
-            Passwords are stored only as a salted PBKDF2-SHA256 hash,
-            never in plain text.
-        </div>
-        """)
-
-    st.stop()
-
-CURRENT_USER_ID = st.session_state["auth_user_id"]
-CURRENT_USERNAME = st.session_state["auth_username"]
-USER_SESSION_TOKEN = f"user_{CURRENT_USER_ID}"
 
 
 # ============================================================
@@ -1086,6 +829,7 @@ class TraitImpact(BaseModel):
     cognitive_load_pct: int = Field(ge=0, le=100, description="Predicted cognitive load during the scenario")
     behavioral_response: str = Field(description="Scientific narrative of how this profile responds behaviorally")
     friction_points: List[str] = Field(min_length=1, max_length=3)
+
 
 class PersonalityPredictorResponse(BaseModel):
     overall_scenario_dynamics: str = Field(description="Summary of how the diverse personalities interact with the event overall")
@@ -1899,6 +1643,7 @@ Be realistic and ground estimations in environmental friction and crowd dynamics
         temperature=0.3,
     )
 
+
 def generate_personality_impact(
     client,
     model_name,
@@ -1926,6 +1671,79 @@ Model the specific behavioral impact, cognitive load, focus shift, and stress le
         system_instruction=AI_SYSTEM,
         temperature=0.3,
     )
+
+
+# ============================================================
+# 15.5. AUTHENTICATION SYSTEM
+# ============================================================
+
+def hash_password(password: str, salt: str) -> str:
+    return hashlib.sha256((password + salt).encode('utf-8')).hexdigest()
+
+auth_db = db_session()
+current_session = st.session_state.get("user_session_token", "")
+current_user = auth_db.query(UserAccount).filter(UserAccount.user_token == current_session).first()
+
+if not current_user:
+    st.markdown("""
+        <div class='hero' style='text-align: center; padding-top: 60px;'>
+            <div class='hero-title'>Outreach Intelligence Lab</div>
+            <div class='hero-subtitle' style='margin: 0 auto;'>
+                Secure authentication required. Please log in or register to access your isolated workspace.<br>
+                Your data and progress will remain fully persistent and separate from other users.
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    col1, col2, col3 = st.columns([1, 1.5, 1])
+    with col2:
+        tab1, tab2 = st.tabs(["🔒 Login", "📝 Register"])
+
+        with tab1:
+            with st.form("login_form"):
+                log_user = st.text_input("Username")
+                log_pass = st.text_input("Password", type="password")
+                if st.form_submit_button("Login", use_container_width=True):
+                    if not log_user or not log_pass:
+                        st.error("Please enter username and password.")
+                    else:
+                        user_record = auth_db.query(UserAccount).filter(UserAccount.username == log_user).first()
+                        if user_record and user_record.password_hash == hash_password(log_pass, user_record.salt):
+                            st.session_state["_trigger_ls_update"] = user_record.user_token
+                            st.rerun()
+                        else:
+                            st.error("Invalid username or password.")
+
+        with tab2:
+            with st.form("register_form"):
+                reg_user = st.text_input("Choose Username")
+                reg_pass = st.text_input("Choose Password", type="password")
+                reg_pass_conf = st.text_input("Confirm Password", type="password")
+                if st.form_submit_button("Register", use_container_width=True):
+                    if not reg_user or not reg_pass:
+                        st.error("Please fill all fields.")
+                    elif reg_pass != reg_pass_conf:
+                        st.error("Passwords do not match.")
+                    else:
+                        existing = auth_db.query(UserAccount).filter(UserAccount.username == reg_user).first()
+                        if existing:
+                            st.error("Username already taken.")
+                        else:
+                            new_salt = secrets.token_hex(8)
+                            new_hash = hash_password(reg_pass, new_salt)
+                            new_user_token = f"auth_{uuid.uuid4().hex}"
+                            new_user = UserAccount(
+                                id=str(uuid.uuid4()),
+                                username=reg_user,
+                                password_hash=new_hash,
+                                salt=new_salt,
+                                user_token=new_user_token
+                            )
+                            auth_db.add(new_user)
+                            auth_db.commit()
+                            st.session_state["_trigger_ls_update"] = new_user_token
+                            st.rerun()
+    st.stop()
 
 
 # ============================================================
@@ -1978,66 +1796,40 @@ with header_col1:
     """)
 
 with header_col2:
-    render_html(f"""
-    <div class="small-note" style="margin-bottom:8px; text-align:center;">
-        Logged in as <strong style="color:var(--text);">{clean_text(CURRENT_USERNAME)}</strong>
-    </div>
-    """)
+    render_html(f"<div class='eyebrow' style='margin-bottom: 5px; text-align:center;'>User: {current_user.username}</div>")
+    b1, b2 = st.columns(2)
+    
+    with b1:
+        if st.button("Erase", use_container_width=True, help="Safely erase all of your saved memory and data"):
+            user_events = db.query(Event).filter(Event.session_token == USER_SESSION_TOKEN).all()
+            user_event_ids = [e.id for e in user_events]
+            
+            if user_event_ids:
+                user_interactions = db.query(Interaction).filter(Interaction.event_id.in_(user_event_ids)).all()
+                user_int_ids = [i.id for i in user_interactions]
+                
+                if user_int_ids:
+                    db.query(Observation).filter(Observation.interaction_id.in_(user_int_ids)).delete(synchronize_session=False)
+                    db.query(Survey).filter(Survey.interaction_id.in_(user_int_ids)).delete(synchronize_session=False)
+                    db.query(Interaction).filter(Interaction.event_id.in_(user_event_ids)).delete(synchronize_session=False)
+                
+                db.query(Event).filter(Event.session_token == USER_SESSION_TOKEN).delete(synchronize_session=False)
 
-    if "confirm_erase" not in st.session_state:
-        st.session_state["confirm_erase"] = False
-
-    if not st.session_state["confirm_erase"]:
-        if st.button("Erase All My Data", use_container_width=True):
-            st.session_state["confirm_erase"] = True
+            db.query(RapidStateLog).filter(RapidStateLog.session_token == USER_SESSION_TOKEN).delete(synchronize_session=False)
+            db.query(PersonalityProfile).filter(PersonalityProfile.session_token == USER_SESSION_TOKEN).delete(synchronize_session=False)
+            db.commit()
+            
+            # Wipes active states while keeping the user logged into their account
+            for key in ["active_event_id", "active_interaction_id", "last_recommendation", "last_forward_model", "last_counterfactual", "last_impact_interpretation", "last_prediction", "last_personality_prediction"]:
+                st.session_state[key] = None
             st.rerun()
-    else:
-        st.warning(
-            "This permanently deletes every experience, interaction, "
-            "observation, survey, rapid-state log, and personality "
-            "profile in your account. This cannot be undone."
-        )
-        erase_confirm_col, erase_cancel_col = st.columns(2)
-        with erase_confirm_col:
-            if st.button("Yes, erase everything", type="primary", use_container_width=True):
-                # Explicitly clear only this user's persistent database entries
-                user_events = db.query(Event).filter(Event.session_token == USER_SESSION_TOKEN).all()
-                user_event_ids = [e.id for e in user_events]
 
-                if user_event_ids:
-                    user_interactions = db.query(Interaction).filter(Interaction.event_id.in_(user_event_ids)).all()
-                    user_int_ids = [i.id for i in user_interactions]
-
-                    if user_int_ids:
-                        db.query(Observation).filter(Observation.interaction_id.in_(user_int_ids)).delete(synchronize_session=False)
-                        db.query(Survey).filter(Survey.interaction_id.in_(user_int_ids)).delete(synchronize_session=False)
-                        db.query(Interaction).filter(Interaction.event_id.in_(user_event_ids)).delete(synchronize_session=False)
-
-                    db.query(Event).filter(Event.session_token == USER_SESSION_TOKEN).delete(synchronize_session=False)
-
-                db.query(RapidStateLog).filter(RapidStateLog.session_token == USER_SESSION_TOKEN).delete(synchronize_session=False)
-                db.query(PersonalityProfile).filter(PersonalityProfile.session_token == USER_SESSION_TOKEN).delete(synchronize_session=False)
-                db.commit()
-
-                # Reset in-memory workspace state, but keep the user logged in
-                _preserve_keys = {"auth_user_id", "auth_username", "auth_token", "_checked_remember_me"}
-                for _k in list(st.session_state.keys()):
-                    if _k not in _preserve_keys:
-                        del st.session_state[_k]
-
-                st.rerun()
-        with erase_cancel_col:
-            if st.button("Cancel", use_container_width=True):
-                st.session_state["confirm_erase"] = False
-                st.rerun()
-
-    if st.button("Log out", use_container_width=True):
-        revoke_auth_token(db, st.session_state.get("auth_token"))
-        if AUTH_QUERY_KEY in st.query_params:
-            del st.query_params[AUTH_QUERY_KEY]
-        forget_token_in_browser()
-        st.session_state.clear()
-        st.rerun()
+    with b2:
+        if st.button("Logout", use_container_width=True, help="Log out of your account securely"):
+            st.session_state.clear()
+            fresh_token = f"user_{uuid.uuid4().hex[:12]}"
+            st.session_state["_trigger_ls_update"] = fresh_token
+            st.rerun()
 
     render_html(f"""
     <div class="small-note" style="margin-top:8px; text-align:center;">
@@ -3957,339 +3749,4 @@ body {{
     border-radius: 50%;
     display: flex;
     align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    transition: all 0.25s ease;
-    position: relative;
-    user-select: none;
-}}
-
-.voice-fab.off {{
-    background: rgba(18, 18, 22, 0.90);
-    backdrop-filter: blur(12px);
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
-}}
-.voice-fab.off:hover {{
-    background: rgba(30, 30, 38, 0.95);
-    transform: scale(1.05);
-}}
-.voice-fab.off svg {{ fill: #a1a1aa; }}
-
-.status-dot {{
-    position: absolute;
-    top: 2px;
-    right: 2px;
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    border: 2px solid #0b0b0d;
-}}
-.voice-fab.off .status-dot {{ background-color: #71717a; }}
-.voice-fab.on .status-dot {{ background-color: #4ade80; box-shadow: 0 0 6px #4ade80; }}
-
-.voice-fab.on {{
-    background: #ffffff;
-    border: 1px solid #ffffff;
-    box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.2), 0 8px 24px rgba(91, 140, 255, 0.4);
-    transform: scale(1.05);
-}}
-.voice-fab.on svg {{ fill: #09090b; }}
-.voice-fab svg {{ width: 22px; height: 22px; }}
-
-.voice-panel {{
-    width: 290px;
-    background: rgba(15, 15, 18, 0.95);
-    backdrop-filter: blur(16px);
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 12px;
-    padding: 12px 14px;
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
-    display: none;
-    color: #f4f4f5;
-}}
-.voice-panel.visible {{ display: block; }}
-
-.panel-header {{
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 6px;
-    padding-bottom: 4px;
-    border-bottom: 1px solid rgba(255,255,255,0.08);
-}}
-
-.voice-status-title {{
-    font-size: 0.65rem;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    font-weight: 700;
-    color: #94a3b8;
-}}
-
-.badge-state {{
-    font-size: 0.60rem;
-    padding: 2px 6px;
-    border-radius: 4px;
-    font-weight: 700;
-    text-transform: uppercase;
-}}
-.badge-off {{ background: rgba(255,255,255,0.08); color: #71717a; }}
-.badge-on {{ background: rgba(74, 222, 128, 0.15); color: #4ade80; }}
-
-.voice-text {{
-    font-size: 0.75rem;
-    color: #d1d5db;
-    min-height: 42px;
-    max-height: 95px;
-    overflow-y: auto;
-    line-height: 1.4;
-    word-break: break-word;
-    font-weight: 400;
-}}
-</style>
-</head>
-<body>
-
-<div class="voice-container">
-    <div id="voicePanel" class="voice-panel">
-        <div class="panel-header">
-            <span class="voice-status-title">AI Voice Copilot</span>
-            <span id="voiceBadge" class="badge-state badge-off">OFF</span>
-        </div>
-        <div id="voiceText" class="voice-text">Tap the mic to start speaking...</div>
-    </div>
-
-    <div id="voiceFab" class="voice-fab off" onclick="toggleVoiceSession()">
-        <div class="status-dot"></div>
-        <svg viewBox="0 0 24 24">
-            <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
-            <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
-        </svg>
-    </div>
-</div>
-
-<script>
-let isListening = false;
-let recognition = null;
-let currentVoices = [];
-const systemContext = {system_prompt_json};
-
-function loadVoices() {{
-    if ('speechSynthesis' in window) {{
-        currentVoices = window.speechSynthesis.getVoices();
-    }}
-}}
-if ('speechSynthesis' in window) {{
-    loadVoices();
-    window.speechSynthesis.onvoiceschanged = loadVoices;
-}}
-
-// Selects natural male voice profiles without artificial pitch shifting
-function getNaturalMaleVoice() {{
-    if (!currentVoices || currentVoices.length === 0) loadVoices();
-
-    const preferredMaleNames = [
-        'google us english male',
-        'microsoft david',
-        'microsoft guy',
-        'microsoft mark',
-        'alex',
-        'daniel',
-        'fred',
-        'oliver',
-        'george'
-    ];
-
-    // Search for known high-quality male voices first
-    for (let name of preferredMaleNames) {{
-        let found = currentVoices.find(v => v.name.toLowerCase().includes(name));
-        if (found) return found;
-    }}
-
-    // Secondary search for any voice tagged with male terms
-    let maleFound = currentVoices.find(v => 
-        v.lang.startsWith('en') && 
-        (v.name.toLowerCase().includes('male') || v.name.toLowerCase().includes('man'))
-    );
-
-    return maleFound || currentVoices.find(v => v.lang.startsWith('en')) || currentVoices[0];
-}}
-
-function speakText(text, onComplete) {{
-    if ('speechSynthesis' in window) {{
-        window.speechSynthesis.cancel();
-        const utterance = new SpeechSynthesisUtterance(text);
-        const selectedVoice = getNaturalMaleVoice();
-
-        if (selectedVoice) {{
-            utterance.voice = selectedVoice;
-        }}
-
-        utterance.lang = 'en-US';
-        utterance.pitch = 1.0; // Natural native pitch (no robot distortion)
-        utterance.rate = 1.0;
-
-        utterance.onend = () => {{ if (onComplete) onComplete(); }};
-        utterance.onerror = () => {{ if (onComplete) onComplete(); }};
-        
-        window.speechSynthesis.speak(utterance);
-    }} else if (onComplete) {{
-        onComplete();
-    }}
-}}
-
-async function queryGeminiVoice(userInput) {{
-    const apiKey = "{api_key}";
-    const selectedModel = "{selected_model}";
-    const textDiv = document.getElementById('voiceText');
-    const badge = document.getElementById('voiceBadge');
-
-    if (!apiKey) {{
-        textDiv.innerText = "API key missing.";
-        return;
-    }}
-
-    textDiv.innerText = "Thinking...";
-    badge.innerText = "THINKING";
-
-    try {{
-        const response = await fetch(`[https://generativelanguage.googleapis.com/v1beta/models/$](https://generativelanguage.googleapis.com/v1beta/models/$){{selectedModel}}:generateContent?key=${{apiKey}}`, {{
-            method: 'POST',
-            headers: {{ 'Content-Type': 'application/json' }},
-            body: JSON.stringify({{
-                system_instruction: {{
-                    parts: [{{
-                        text: `You are the AI Voice Copilot. System context: ${{systemContext}}. Speak concisely in 1-2 sentences maximum.`
-                    }}]
-                }},
-                contents: [{{ parts: [{{ text: userInput }}] }}]
-            }})
-        }});
-
-        const data = await response.json();
-        const reply = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "I couldn't process that clearly. Please try again.";
-
-        textDiv.innerText = reply;
-        badge.innerText = "SPEAKING";
-        
-        speakText(reply, () => {{
-            if (isListening) {{
-                badge.innerText = "LISTENING";
-                try {{ recognition.start(); }} catch(e){{}}
-            }}
-        }});
-
-    }} catch (err) {{
-        textDiv.innerText = "Connection error. Retrying...";
-        badge.innerText = "ERROR";
-    }}
-}}
-
-if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {{
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    recognition = new SpeechRecognition();
-    recognition.continuous = false;
-    recognition.interimResults = false;
-    recognition.maxAlternatives = 1;
-    recognition.lang = 'en-US';
-
-    recognition.onresult = function(event) {{
-        if (event.results && event.results[0]) {{
-            const transcript = event.results[0][0].transcript;
-            document.getElementById('voiceText').innerText = 'You: "' + transcript + '"';
-            queryGeminiVoice(transcript);
-        }}
-    }};
-
-    recognition.onerror = function() {{
-        if (isListening) {{
-            try {{ recognition.start(); }} catch(e){{}}
-        }}
-    }};
-}}
-
-function toggleVoiceSession() {{
-    const panel = document.getElementById('voicePanel');
-    const fab = document.getElementById('voiceFab');
-    const badge = document.getElementById('voiceBadge');
-    const textDiv = document.getElementById('voiceText');
-
-    if (!isListening) {{
-        panel.classList.add('visible');
-        fab.classList.replace('off', 'on');
-        badge.className = "badge-state badge-on";
-        badge.innerText = "LISTENING";
-        textDiv.innerText = "Listening clearly...";
-        
-        speakText("Online. How can I help?", () => {{
-            if (recognition) {{
-                try {{ recognition.start(); }} catch(e){{}}
-            }}
-        }});
-
-        isListening = true;
-    }} else {{
-        fab.classList.replace('on', 'off');
-        badge.className = "badge-state badge-off";
-        badge.innerText = "OFF";
-        textDiv.innerText = "Muted.";
-        
-        if (recognition) {{
-            try {{ recognition.stop(); }} catch(e){{}}
-        }}
-        window.speechSynthesis.cancel();
-        isListening = false;
-        setTimeout(() => {{ panel.classList.remove('visible'); }}, 1500);
-    }}
-}}
-</script>
-</body>
-</html>
-"""
-
-components.html(voice_html, height=220, width=320)
-
-
-# ============================================================
-# 26. FOOTER
-# ============================================================
-
-render_html("""
-<div style="
-    text-align:center;
-    margin-top:70px;
-    padding-top:25px;
-    border-top:1px solid #202024;
-    color:#52525b;
-    font-size:.78rem;
-    line-height:1.6;
-">
-    <div style="
-        color:#71717a;
-        margin-bottom:8px;
-    ">
-        Outreach Intelligence Lab
-    </div>
-
-    <div>
-        Exploratory generative modeling and
-        evidence-informed science outreach.
-    </div>
-
-    <div style="
-        max-width:850px;
-        margin:12px auto 0 auto;
-    ">
-        AI-generated predictions are synthetic hypotheses.
-        They do not establish psychological, neurological,
-        clinical, or causal facts about individuals.
-        Real-world impact metrics are calculated from recorded
-        observations and participant-reported outcomes.
-    </div>
-</div>
-""")
-
-
-# ============================================================
-# 2
+    justify
