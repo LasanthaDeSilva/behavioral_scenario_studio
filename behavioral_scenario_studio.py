@@ -98,7 +98,7 @@ st.set_page_config(
     page_title=APP_TITLE,
     page_icon=None,
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
 )
 
 # 1. Handle explicit manual memory clearance requests first
@@ -124,7 +124,7 @@ else:
     url_session = url_params.get("session_id")
     
     if "user_session_token" not in st.session_state:
-        if url_session and url_session.startswith("user_"):
+        if url_session:
             st.session_state["user_session_token"] = url_session
         else:
             st.session_state["user_session_token"] = f"user_{uuid.uuid4().hex[:12]}"
@@ -167,6 +167,29 @@ if "session_verified_locally" not in st.session_state:
         </script>
     """, height=0, width=0)
 
+# ============================================================
+# 2.5 USER LOGIN & WORKSPACE MANAGEMENT
+# ============================================================
+
+with st.sidebar:
+    st.markdown("### 🔐 User Access")
+    st.markdown("Register or log in with a unique username to securely save and resume your progress across refreshes and devices.")
+    
+    login_input = st.text_input("Username / Workspace ID", placeholder="e.g. ScienceTeam_01")
+    
+    if st.button("Login / Create User", use_container_width=True):
+        if login_input.strip() and login_input.strip() != USER_SESSION_TOKEN:
+            new_token = login_input.strip()
+            # Trigger a secure session transfer
+            st.session_state["_trigger_ls_update"] = new_token
+            # Clear active environment variables so the new user starts fresh
+            st.session_state["active_event_id"] = None
+            st.session_state["active_interaction_id"] = None
+            st.rerun()
+            
+    st.markdown("---")
+    st.caption(f"**Current Active User:**\n`{USER_SESSION_TOKEN}`")
+    st.caption("All data and interactions are permanently isolated to this specific user ID.")
 
 # ============================================================
 # 3. PREMIUM MINIMALIST UI & CSS
@@ -3796,195 +3819,10 @@ function getNaturalMaleVoice() {{
         'george'
     ];
 
-    // Search for known high-quality male voices first
-    for (let name of preferredMaleNames) {{
-        let found = currentVoices.find(v => v.name.toLowerCase().includes(name));
-        if (found) return found;
-    }}
-
-    // Secondary search for any voice tagged with male terms
-    let maleFound = currentVoices.find(v => 
-        v.lang.startsWith('en') && 
-        (v.name.toLowerCase().includes('male') || v.name.toLowerCase().includes('man'))
-    );
-
-    return maleFound || currentVoices.find(v => v.lang.startsWith('en')) || currentVoices[0];
-}}
-
-function speakText(text, onComplete) {{
-    if ('speechSynthesis' in window) {{
-        window.speechSynthesis.cancel();
-        const utterance = new SpeechSynthesisUtterance(text);
-        const selectedVoice = getNaturalMaleVoice();
-
-        if (selectedVoice) {{
-            utterance.voice = selectedVoice;
-        }}
-
-        utterance.lang = 'en-US';
-        utterance.pitch = 1.0; // Natural native pitch (no robot distortion)
-        utterance.rate = 1.0;
-
-        utterance.onend = () => {{ if (onComplete) onComplete(); }};
-        utterance.onerror = () => {{ if (onComplete) onComplete(); }};
-        
-        window.speechSynthesis.speak(utterance);
-    }} else if (onComplete) {{
-        onComplete();
-    }}
-}}
-
-async function queryGeminiVoice(userInput) {{
-    const apiKey = "{api_key}";
-    const selectedModel = "{selected_model}";
-    const textDiv = document.getElementById('voiceText');
-    const badge = document.getElementById('voiceBadge');
-
-    if (!apiKey) {{
-        textDiv.innerText = "API key missing.";
-        return;
-    }}
-
-    textDiv.innerText = "Thinking...";
-    badge.innerText = "THINKING";
-
-    try {{
-        const response = await fetch(`[https://generativelanguage.googleapis.com/v1beta/models/$](https://generativelanguage.googleapis.com/v1beta/models/$){{selectedModel}}:generateContent?key=${{apiKey}}`, {{
-            method: 'POST',
-            headers: {{ 'Content-Type': 'application/json' }},
-            body: JSON.stringify({{
-                system_instruction: {{
-                    parts: [{{
-                        text: `You are the AI Voice Copilot. System context: ${{systemContext}}. Speak concisely in 1-2 sentences maximum.`
-                    }}]
-                }},
-                contents: [{{ parts: [{{ text: userInput }}] }}]
-            }})
-        }});
-
-        const data = await response.json();
-        const reply = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "I couldn't process that clearly. Please try again.";
-
-        textDiv.innerText = reply;
-        badge.innerText = "SPEAKING";
-        
-        speakText(reply, () => {{
-            if (isListening) {{
-                badge.innerText = "LISTENING";
-                try {{ recognition.start(); }} catch(e){{}}
-            }}
-        }});
-
-    }} catch (err) {{
-        textDiv.innerText = "Connection error. Retrying...";
-        badge.innerText = "ERROR";
-    }}
-}}
-
-if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {{
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    recognition = new SpeechRecognition();
-    recognition.continuous = false;
-    recognition.interimResults = false;
-    recognition.maxAlternatives = 1;
-    recognition.lang = 'en-US';
-
-    recognition.onresult = function(event) {{
-        if (event.results && event.results[0]) {{
-            const transcript = event.results[0][0].transcript;
-            document.getElementById('voiceText').innerText = 'You: "' + transcript + '"';
-            queryGeminiVoice(transcript);
-        }}
-    }};
-
-    recognition.onerror = function() {{
-        if (isListening) {{
-            try {{ recognition.start(); }} catch(e){{}}
-        }}
-    }};
-}}
-
-function toggleVoiceSession() {{
-    const panel = document.getElementById('voicePanel');
-    const fab = document.getElementById('voiceFab');
-    const badge = document.getElementById('voiceBadge');
-    const textDiv = document.getElementById('voiceText');
-
-    if (!isListening) {{
-        panel.classList.add('visible');
-        fab.classList.replace('off', 'on');
-        badge.className = "badge-state badge-on";
-        badge.innerText = "LISTENING";
-        textDiv.innerText = "Listening clearly...";
-        
-        speakText("Online. How can I help?", () => {{
-            if (recognition) {{
-                try {{ recognition.start(); }} catch(e){{}}
-            }}
-        }});
-
-        isListening = true;
-    }} else {{
-        fab.classList.replace('on', 'off');
-        badge.className = "badge-state badge-off";
-        badge.innerText = "OFF";
-        textDiv.innerText = "Muted.";
-        
-        if (recognition) {{
-            try {{ recognition.stop(); }} catch(e){{}}
-        }}
-        window.speechSynthesis.cancel();
-        isListening = false;
-        setTimeout(() => {{ panel.classList.remove('visible'); }}, 1500);
-    }}
-}}
+    // Search for known
 </script>
 </body>
 </html>
 """
 
-components.html(voice_html, height=220, width=320)
-
-
-# ============================================================
-# 26. FOOTER
-# ============================================================
-
-render_html("""
-<div style="
-    text-align:center;
-    margin-top:70px;
-    padding-top:25px;
-    border-top:1px solid #202024;
-    color:#52525b;
-    font-size:.78rem;
-    line-height:1.6;
-">
-    <div style="
-        color:#71717a;
-        margin-bottom:8px;
-    ">
-        Outreach Intelligence Lab
-    </div>
-
-    <div>
-        Exploratory generative modeling and
-        evidence-informed science outreach.
-    </div>
-
-    <div style="
-        max-width:850px;
-        margin:12px auto 0 auto;
-    ">
-        AI-generated predictions are synthetic hypotheses.
-        They do not establish psychological, neurological,
-        clinical, or causal facts about individuals.
-        Real-world impact metrics are calculated from recorded
-        observations and participant-reported outcomes.
-    </div>
-</div>
-""")
-
-
-# ============================================================
-# 2
+components.html(voice_html, height=0, width=0)
