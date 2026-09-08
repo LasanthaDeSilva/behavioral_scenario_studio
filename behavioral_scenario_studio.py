@@ -820,31 +820,53 @@ auth_db = db_session()
 raw_auth_token = st.query_params.get("auth_session")
 authenticated_user = _authenticate_token(auth_db, raw_auth_token)
 
-if authenticated_user is None:
-    components.html("""
+if authenticated_user:
+    # 1. User is valid: Persist the session to localStorage so they stay logged in across refreshes/restarts.
+    components.html(f"""
         <script>
-        (function () {
-            try {
-                const params = new URLSearchParams(window.parent.location.search);
-                const token = params.get("auth_session");
-                const saved = window.parent.localStorage.getItem("outreach_auth_session");
-                if (!token && saved) {
-                    params.set("auth_session", saved);
-                    window.parent.location.replace(
-                        window.parent.location.pathname + "?" + params.toString()
-                    );
-                } else if (token) {
-                    window.parent.localStorage.setItem("outreach_auth_session", token);
-                }
-            } catch (e) {}
-        })();
+        try {{
+            window.parent.localStorage.setItem("outreach_auth_session", "{raw_auth_token}");
+        }} catch (e) {{}}
         </script>
     """, height=0, width=0)
+
+else:
+    if raw_auth_token:
+        # 2. An invalid or expired token was found in the URL. Clear it out so the user starts cleanly logged out.
+        _clear_auth_query_token()
+        components.html("""
+            <script>
+            (function () {
+                try {
+                    window.parent.localStorage.removeItem("outreach_auth_session");
+                    const url = new URL(window.parent.location);
+                    url.searchParams.delete("auth_session");
+                    window.parent.history.replaceState({}, '', url);
+                } catch (e) {}
+            })();
+            </script>
+        """, height=0, width=0)
+    else:
+        # 3. No token present. Check if the device has a valid saved session to auto-login.
+        components.html("""
+            <script>
+            (function () {
+                try {
+                    const saved = window.parent.localStorage.getItem("outreach_auth_session");
+                    if (saved) {
+                        const url = new URL(window.parent.location);
+                        url.searchParams.set("auth_session", saved);
+                        window.parent.location.replace(url.toString());
+                    }
+                } catch (e) {}
+            })();
+            </script>
+        """, height=0, width=0)
 
     st.markdown("## Account")
     st.caption(
         "Log in or register to keep your Outreach Intelligence Lab workspace "
-        "saved independently across refreshes and browser restarts."
+        "saved independently across refreshes and browser restarts. 
     )
 
     login_tab, register_tab = st.tabs(["Log in", "Register"])
