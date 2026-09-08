@@ -891,11 +891,7 @@ if authenticated_user is None:
                 st.error(
                     "Username must be 3-64 characters and use only letters, "
                     "numbers, periods, underscores, or hyphens."
-                )
-            elif len(register_password) < MIN_PASSWORD_LENGTH:
-                st.error(
-                    f"Password must contain at least {MIN_PASSWORD_LENGTH} characters."
-                )
+                ) 
             elif register_password != register_confirm:
                 st.error("Passwords do not match.")
             elif exists is not None:
