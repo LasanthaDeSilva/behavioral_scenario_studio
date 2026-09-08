@@ -3,3 +3,4 @@ pandas
 sqlalchemy
 pydantic
 google-genai
+reportlab
