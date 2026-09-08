@@ -6,7 +6,7 @@ A self-contained Streamlit application for:
     - Designing outreach scenarios
     - Modeling likely engagement pathways
     - Predicting real-world outcomes and metrics
-    - Running a live outreach copilot with floating real-time AI Voice
+    - Running a live outreach copilot
     - Recording lightweight observations
     - Comparing predicted vs observed engagement
     - Measuring optional real-world impact
@@ -4208,77 +4208,7 @@ async function queryGeminiVoice(userInput) {{
                 badge.innerText = "LISTENING";
                 try {{ recognition.start(); }} catch(e){{}}
             }}
-        }});
 
-    }} catch (err) {{
-        textDiv.innerText = "Connection error. Retrying...";
-        badge.innerText = "ERROR";
-    }}
-}}
-
-if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {{
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    recognition = new SpeechRecognition();
-    recognition.continuous = false;
-    recognition.interimResults = false;
-    recognition.maxAlternatives = 1;
-    recognition.lang = 'en-US';
-
-    recognition.onresult = function(event) {{
-        if (event.results && event.results[0]) {{
-            const transcript = event.results[0][0].transcript;
-            document.getElementById('voiceText').innerText = 'You: "' + transcript + '"';
-            queryGeminiVoice(transcript);
-        }}
-    }};
-
-    recognition.onerror = function() {{
-        if (isListening) {{
-            try {{ recognition.start(); }} catch(e){{}}
-        }}
-    }};
-}}
-
-function toggleVoiceSession() {{
-    const panel = document.getElementById('voicePanel');
-    const fab = document.getElementById('voiceFab');
-    const badge = document.getElementById('voiceBadge');
-    const textDiv = document.getElementById('voiceText');
-
-    if (!isListening) {{
-        panel.classList.add('visible');
-        fab.classList.replace('off', 'on');
-        badge.className = "badge-state badge-on";
-        badge.innerText = "LISTENING";
-        textDiv.innerText = "Listening clearly...";
-        
-        speakText("Online. How can I help?", () => {{
-            if (recognition) {{
-                try {{ recognition.start(); }} catch(e){{}}
-            }}
-        }});
-
-        isListening = true;
-    }} else {{
-        fab.classList.replace('on', 'off');
-        badge.className = "badge-state badge-off";
-        badge.innerText = "OFF";
-        textDiv.innerText = "Muted.";
-        
-        if (recognition) {{
-            try {{ recognition.stop(); }} catch(e){{}}
-        }}
-        window.speechSynthesis.cancel();
-        isListening = false;
-        setTimeout(() => {{ panel.classList.remove('visible'); }}, 1500);
-    }}
-}}
-</script>
-</body>
-</html>
-"""
-
-components.html(voice_html, height=220, width=320)
 
 
 # ============================================================
