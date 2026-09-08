@@ -3990,5 +3990,8 @@ render_html("""
         Real-world impact metrics are calculated from recorded
         observations and participant-reported outcomes.
     </div>
+        <div style="margin-top:12px;">
+        Designed &amp; Engineered by Nikolai de Silva &bull; &copy; 2026 ninolades.com
+    </div>
 </div>
 """)
