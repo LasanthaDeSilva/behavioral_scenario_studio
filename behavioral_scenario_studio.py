@@ -864,9 +864,8 @@ else:
         """, height=0, width=0)
 
     st.markdown("## Account")
-    st.caption(
-        "Log in or register to keep your Outreach Intelligence Lab workspace "
-        "saved independently across refreshes and browser restarts. 
+    st.caption("Log in or register to keep your Outreach Intelligence Lab workspace saved independently across refreshes and browser restarts.")
+  
     )
 
     login_tab, register_tab = st.tabs(["Log in", "Register"])
