@@ -2389,14 +2389,12 @@ elif page == "Outcome Predictor":
         with qc1:
             baseline_stress_q = st.select_slider(
                 "Estimated Baseline Audience Stress Level",
-                st.markdown("<br>", unsafe_allow_html=True)
                 options=["Very Low / Relaxed", "Moderate Stress", "High Stress / Overwhelmed"],
                 value="Moderate Stress",
                 key="q_stress"
             )
             noise_sensory_q = st.select_slider(
                 "Ambient Distraction & Sensory Noise Level",
-                st.markdown("<br>", unsafe_allow_html=True)
                 options=["Quiet & Controlled", "Moderate Noise", "High Loudness / Busy Crowd"],
                 value="Moderate Noise",
                 key="q_noise"
