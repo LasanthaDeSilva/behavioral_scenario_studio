@@ -4,3 +4,4 @@ sqlalchemy
 pydantic
 google-genai
 reportlab
+psycopg2-binary
