@@ -3330,8 +3330,7 @@ def _build_program_pdf(
 
 render_html("""
 <div class="hero">
-    <div class="eyebrow">Ninolades Research Platform</div>
-    <div class="hero-title">
+        <div class="hero-title">
         Outreach Intelligence Lab
     </div>
     <div class="hero-subtitle">
