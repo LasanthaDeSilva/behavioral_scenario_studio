@@ -3330,6 +3330,7 @@ def _build_program_pdf(
 
 render_html("""
 <div class="hero">
+        <div class="eyebrow">&nbsp;</div>
         <div class="hero-title">
         Outreach Intelligence Lab
     </div>
